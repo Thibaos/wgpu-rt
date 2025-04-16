@@ -5,6 +5,7 @@ use winit::event_loop::EventLoop;
 
 mod acceleration_structure;
 mod app;
+mod camera;
 mod compute;
 mod state;
 mod texture;

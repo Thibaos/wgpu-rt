@@ -1,8 +1,13 @@
 use std::sync::Arc;
 
+use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-use crate::{acceleration_structure::AccelerationStructureBuilder, compute::ComputePassLoader};
+use crate::{
+    acceleration_structure::AccelerationStructureBuilder,
+    camera::{self, Camera},
+    compute::ComputePassLoader,
+};
 
 pub struct State<'a> {
     surface: wgpu::Surface<'a>,
@@ -11,7 +16,8 @@ pub struct State<'a> {
     config: wgpu::SurfaceConfiguration,
     window: Arc<Window>,
     pub size: winit::dpi::PhysicalSize<u32>,
-
+    camera: Camera,
+    camera_buffer: wgpu::Buffer,
     compute: ComputePassLoader,
 }
 
@@ -73,7 +79,17 @@ impl<'a> State<'a> {
 
         AccelerationStructureBuilder::new(&device);
 
-        let compute = ComputePassLoader::new(size, &device);
+        let camera = Camera::default();
+
+        let camera_uniform = camera.uniform();
+
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let compute = ComputePassLoader::new(size, &device, &camera_buffer);
 
         Self {
             surface,
@@ -82,6 +98,8 @@ impl<'a> State<'a> {
             config,
             size,
             window,
+            camera,
+            camera_buffer,
             compute,
         }
     }
@@ -93,7 +111,7 @@ impl<'a> State<'a> {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            self.compute = ComputePassLoader::new(new_size, &self.device);
+            self.compute = ComputePassLoader::new(new_size, &self.device, &self.camera_buffer);
         }
     }
 
