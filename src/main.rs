@@ -3,6 +3,7 @@ use std::error::Error;
 use app::Application;
 use winit::event_loop::EventLoop;
 
+mod acceleration_structure;
 mod app;
 mod state;
 

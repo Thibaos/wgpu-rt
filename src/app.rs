@@ -19,6 +19,12 @@ pub struct Application<'a> {
 }
 
 impl ApplicationHandler for Application<'_> {
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ()) {
+        if let Some(state) = self.state.as_mut() {
+            state.input(event);
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attributes =
             Window::default_attributes().with_inner_size(PhysicalSize::new(1920, 1080));
@@ -55,7 +61,23 @@ impl ApplicationHandler for Application<'_> {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(state) = self.state.as_mut() {
-                    state.render().unwrap();
+                    let render_result = state.render();
+
+                    match render_result {
+                        Ok(_) => {}
+                        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+                            state.resize(state.size);
+                        }
+                        Err(wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other) => {
+                            self.close_requested = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            WindowEvent::Resized(new_size) => {
+                if let Some(state) = self.state.as_mut() {
+                    state.resize(new_size);
                 }
             }
             _ => (),
