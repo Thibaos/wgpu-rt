@@ -135,23 +135,6 @@ impl<'a> State<'a> {
             },
         );
 
-        // {
-        //     let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        //         label: Some("CopyPresent::render_pass"),
-        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        //             view: &view,
-        //             resolve_target: None,
-        //             ops: wgpu::Operations {
-        //                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        //                 store: wgpu::StoreOp::Store,
-        //             },
-        //         })],
-        //         depth_stencil_attachment: None,
-        //         occlusion_query_set: None,
-        //         timestamp_writes: None,
-        //     });
-        // }
-
         self.queue.submit(std::iter::once(encoder.finish()));
 
         self.window.pre_present_notify();
