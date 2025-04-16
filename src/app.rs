@@ -19,12 +19,6 @@ pub struct Application<'a> {
 }
 
 impl ApplicationHandler for Application<'_> {
-    fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: ()) {
-        if let Some(state) = self.state.as_mut() {
-            state.input(event);
-        }
-    }
-
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attributes =
             Window::default_attributes().with_inner_size(PhysicalSize::new(1920, 1080));
@@ -42,6 +36,12 @@ impl ApplicationHandler for Application<'_> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
+        if let WindowEvent::KeyboardInput { .. } = event {
+            if let Some(state) = self.state.as_mut() {
+                state.input(&event);
+            }
+        }
+
         match event {
             WindowEvent::CloseRequested => {
                 self.close_requested = true;
@@ -61,6 +61,8 @@ impl ApplicationHandler for Application<'_> {
             }
             WindowEvent::RedrawRequested => {
                 if let Some(state) = self.state.as_mut() {
+                    state.update();
+
                     let render_result = state.render();
 
                     match render_result {

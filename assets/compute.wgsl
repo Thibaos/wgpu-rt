@@ -42,7 +42,7 @@ fn render(pixel_pos: vec2<f32>) -> vec4<f32> {
     let world_direction = (camera.view_inverse * vec4<f32>(normalize(world_target), 0.0)).xyz;
 
     let ray = Ray(world_origin, world_direction);
-    let sphere = Sphere(vec3<f32>(0.0, -10.0, 10.0), 1.0);
+    let sphere = Sphere(vec3<f32>(0.0, 0.0, 10.0), 1.0);
     let hit_sphere = ray_hit_sphere(ray, sphere);
 
     return vec4<f32>(vec3<f32>(clamp(hit_sphere, 0.0, 1.0)), 1.0);

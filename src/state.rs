@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
 use wgpu::util::DeviceExt;
-use winit::window::Window;
+use winit::{event::WindowEvent, window::Window};
 
 use crate::{
-    acceleration_structure::AccelerationStructureBuilder,
-    camera::{self, Camera},
+    acceleration_structure::AccelerationStructureBuilder, camera::Camera,
     compute::ComputePassLoader,
 };
 
@@ -115,11 +114,18 @@ impl<'a> State<'a> {
         }
     }
 
-    pub fn input(&mut self, _event: ()) -> bool {
-        false
+    pub fn input(&mut self, event: &WindowEvent) -> bool {
+        self.camera.process_events(event)
     }
 
-    pub fn update(&mut self) {}
+    pub fn update(&mut self) {
+        self.camera.update();
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[self.camera.uniform()]),
+        );
+    }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         self.compute.render(self.size, &self.device, &self.queue);
