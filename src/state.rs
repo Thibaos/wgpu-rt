@@ -2,14 +2,17 @@ use std::sync::Arc;
 
 use winit::window::Window;
 
-use crate::acceleration_structure::AccelerationStructureBuilder;
+use crate::{acceleration_structure::AccelerationStructureBuilder, compute::ComputePassLoader};
 
 pub struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    window: Arc<Window>,
     pub size: winit::dpi::PhysicalSize<u32>,
+
+    compute: ComputePassLoader,
 }
 
 impl<'a> State<'a> {
@@ -22,7 +25,7 @@ impl<'a> State<'a> {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window).unwrap();
+        let surface = instance.create_surface(window.clone()).unwrap();
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptionsBase {
@@ -36,7 +39,8 @@ impl<'a> State<'a> {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 required_features: wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE
-                    | wgpu::Features::EXPERIMENTAL_RAY_QUERY,
+                    | wgpu::Features::EXPERIMENTAL_RAY_QUERY
+                    | wgpu::Features::BGRA8UNORM_STORAGE,
                 required_limits: if cfg!(target_arch = "wasm32") {
                     wgpu::Limits::downlevel_webgl2_defaults()
                 } else {
@@ -58,7 +62,7 @@ impl<'a> State<'a> {
             .unwrap_or(surface_caps.formats[0]);
 
         let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
             format: surface_format,
             width: size.width,
             height: size.height,
@@ -70,12 +74,16 @@ impl<'a> State<'a> {
 
         AccelerationStructureBuilder::new(&device);
 
+        let compute = ComputePassLoader::new(size, &device);
+
         Self {
             surface,
             device,
             queue,
             config,
             size,
+            window,
+            compute,
         }
     }
 
@@ -85,6 +93,8 @@ impl<'a> State<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
+
+            self.compute = ComputePassLoader::new(new_size, &self.device);
         }
     }
 
@@ -95,42 +105,58 @@ impl<'a> State<'a> {
     pub fn update(&mut self) {}
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        let output = self.surface.get_current_texture()?;
+        self.compute.render(self.size, &self.device, &self.queue);
 
-        let view = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let surface_texture = self.surface.get_current_texture()?;
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Render Encoder"),
+                label: Some("CopyPresent::encoder"),
             });
 
-        {
-            let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1,
-                            g: 0.2,
-                            b: 0.3,
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-        }
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfoBase {
+                texture: &self.compute.texture_loader.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &surface_texture.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width: self.size.width,
+                height: self.size.height,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        // {
+        //     let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        //         label: Some("CopyPresent::render_pass"),
+        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+        //             view: &view,
+        //             resolve_target: None,
+        //             ops: wgpu::Operations {
+        //                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+        //                 store: wgpu::StoreOp::Store,
+        //             },
+        //         })],
+        //         depth_stencil_attachment: None,
+        //         occlusion_query_set: None,
+        //         timestamp_writes: None,
+        //     });
+        // }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+
+        self.window.pre_present_notify();
+
+        surface_texture.present();
 
         Ok(())
     }

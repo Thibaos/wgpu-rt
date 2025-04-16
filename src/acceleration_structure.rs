@@ -1,43 +1,37 @@
-use wgpu::{
-    AccelerationStructureFlags, AccelerationStructureUpdateMode, Blas, BlasGeometrySizeDescriptors,
-    BlasTriangleGeometrySizeDescriptor, CreateBlasDescriptor, CreateTlasDescriptor, Device,
-    TlasPackage, VertexFormat, wgt::AccelerationStructureGeometryFlags,
-};
-
 pub struct AccelerationStructureBuilder {
-    blas: Blas,
-    tlas: TlasPackage,
+    blas: wgpu::Blas,
+    tlas: wgpu::TlasPackage,
 }
 
 impl AccelerationStructureBuilder {
-    pub fn new(device: &Device) -> Self {
-        let descriptor = BlasTriangleGeometrySizeDescriptor {
-            vertex_format: VertexFormat::Float32x3,
+    pub fn new(device: &wgpu::Device) -> Self {
+        let descriptor = wgpu::BlasTriangleGeometrySizeDescriptor {
+            vertex_format: wgpu::VertexFormat::Float32x3,
             vertex_count: 3 * 2 * 6,
             index_count: None,
             index_format: None,
-            flags: AccelerationStructureGeometryFlags::OPAQUE,
+            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
         };
 
         let blas = device.create_blas(
-            &CreateBlasDescriptor {
+            &wgpu::CreateBlasDescriptor {
                 label: Some("Cube geometry"),
-                flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
-                update_mode: AccelerationStructureUpdateMode::Build,
+                flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+                update_mode: wgpu::AccelerationStructureUpdateMode::Build,
             },
-            BlasGeometrySizeDescriptors::Triangles {
+            wgpu::BlasGeometrySizeDescriptors::Triangles {
                 descriptors: vec![descriptor],
             },
         );
 
-        let tlas_inner = device.create_tlas(&CreateTlasDescriptor {
+        let tlas_inner = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("Cube instances"),
             max_instances: 2u32.pow(24),
-            flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: AccelerationStructureUpdateMode::PreferUpdate,
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::PreferUpdate,
         });
 
-        let tlas = TlasPackage::new(tlas_inner);
+        let tlas = wgpu::TlasPackage::new(tlas_inner);
 
         Self { blas, tlas }
     }
