@@ -16,7 +16,6 @@ pub struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    // Creating some of the wgpu types requires async code
     pub async fn new(window: Arc<Window>) -> State<'a> {
         let size = window.inner_size();
 
@@ -134,23 +133,6 @@ impl<'a> State<'a> {
                 depth_or_array_layers: 1,
             },
         );
-
-        // {
-        //     let _render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        //         label: Some("CopyPresent::render_pass"),
-        //         color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-        //             view: &view,
-        //             resolve_target: None,
-        //             ops: wgpu::Operations {
-        //                 load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        //                 store: wgpu::StoreOp::Store,
-        //             },
-        //         })],
-        //         depth_stencil_attachment: None,
-        //         occlusion_query_set: None,
-        //         timestamp_writes: None,
-        //     });
-        // }
 
         self.queue.submit(std::iter::once(encoder.finish()));
 
