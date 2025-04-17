@@ -91,23 +91,18 @@ impl Camera {
                 let is_pressed = *state == ElementState::Pressed;
                 match keycode {
                     KeyCode::KeyW | KeyCode::ArrowUp => {
-                        dbg!("forward");
                         self.is_forward_pressed = is_pressed;
                         true
                     }
                     KeyCode::KeyA | KeyCode::ArrowLeft => {
-                        dbg!("left");
-
                         self.is_left_pressed = is_pressed;
                         true
                     }
                     KeyCode::KeyS | KeyCode::ArrowDown => {
-                        dbg!("backward");
                         self.is_backward_pressed = is_pressed;
                         true
                     }
                     KeyCode::KeyD | KeyCode::ArrowRight => {
-                        dbg!("right");
                         self.is_right_pressed = is_pressed;
                         true
                     }

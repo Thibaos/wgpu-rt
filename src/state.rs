@@ -76,7 +76,7 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
-        AccelerationStructureBuilder::new(&device);
+        AccelerationStructureBuilder::new(&device, &queue);
 
         let camera = Camera::default();
 
