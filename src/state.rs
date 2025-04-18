@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use std::{iter, sync::Arc, time::Instant};
 
 use wgpu::util::DeviceExt;
 use winit::{event::WindowEvent, window::Window};
 
 use crate::{
-    acceleration_structure::AccelerationStructureBuilder, camera::Camera,
+    acceleration_structure::{AS_COUNT, AccelerationStructureLoader, affine_to_rows},
+    camera::Camera,
     compute::ComputePassLoader,
 };
 
@@ -15,6 +16,8 @@ pub struct State<'a> {
     config: wgpu::SurfaceConfiguration,
     window: Arc<Window>,
     pub size: winit::dpi::PhysicalSize<u32>,
+    pub start_instant: Instant,
+    as_loader: AccelerationStructureLoader,
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     compute: ComputePassLoader,
@@ -76,7 +79,7 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
-        AccelerationStructureBuilder::new(&device, &queue);
+        let as_loader = AccelerationStructureLoader::new(&device, &queue);
 
         let camera = Camera::default();
 
@@ -88,7 +91,7 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let compute = ComputePassLoader::new(size, &device, &camera_buffer);
+        let compute = ComputePassLoader::new(size, &device, &camera_buffer, as_loader.tlas.tlas());
 
         Self {
             surface,
@@ -96,9 +99,11 @@ impl<'a> State<'a> {
             queue,
             config,
             size,
+            start_instant: Instant::now(),
             window,
             camera,
             camera_buffer,
+            as_loader,
             compute,
         }
     }
@@ -110,7 +115,12 @@ impl<'a> State<'a> {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
 
-            self.compute = ComputePassLoader::new(new_size, &self.device, &self.camera_buffer);
+            self.compute = ComputePassLoader::new(
+                new_size,
+                &self.device,
+                &self.camera_buffer,
+                self.as_loader.tlas.tlas(),
+            );
         }
     }
 
@@ -128,15 +138,36 @@ impl<'a> State<'a> {
     }
 
     pub fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
-        self.compute.render(self.size, &self.device, &self.queue);
+        let anim_time = self.start_instant.elapsed().as_secs_f64() as f32;
 
-        let surface_texture = self.surface.get_current_texture()?;
+        for i in 0..AS_COUNT as usize {
+            let instance = self.as_loader.tlas[i].as_mut().unwrap();
+
+            let translation = glam::vec3(
+                instance.transform[3],
+                instance.transform[7],
+                instance.transform[11],
+            );
+
+            instance.mask = if (translation.z / 16.0 + anim_time).sin() > 0.0
+                && (translation.y / 16.0 + anim_time).cos() > 0.0
+                && (translation.x / 16.0 + anim_time).sin() > 0.0
+            {
+                0x00
+            } else {
+                0xff
+            };
+        }
 
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("CopyPresent::encoder"),
-            });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        encoder.build_acceleration_structures(iter::empty(), iter::once(&self.as_loader.tlas));
+
+        self.compute.render(self.size, &mut encoder);
+
+        let surface_texture = self.surface.get_current_texture()?;
 
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfoBase {

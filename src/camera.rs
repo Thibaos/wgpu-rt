@@ -1,22 +1,14 @@
+use bytemuck::{Pod, Zeroable};
 use winit::{
     event::{ElementState, KeyEvent, WindowEvent},
     keyboard::{KeyCode, PhysicalKey},
 };
 
-#[rustfmt::skip]
-pub const TO_WGPU_MATRIX: glam::Mat4 = glam::Mat4::from_cols(
-    glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
-    glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
-    glam::Vec4::new(0.0, 0.0, 0.5, 0.0),
-    glam::Vec4::new(0.0, 0.0, 0.5, 1.0),
-);
-
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct CameraUniform {
-    view_proj: [[f32; 4]; 4],
-    view_inverse: [[f32; 4]; 4],
-    proj_inverse: [[f32; 4]; 4],
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct Uniforms {
+    view_inv: glam::Mat4,
+    proj_inv: glam::Mat4,
 }
 
 pub struct Camera {
@@ -56,7 +48,7 @@ impl Default for Camera {
 }
 
 impl Camera {
-    fn compute(&self) -> (glam::Mat4, glam::Mat4, glam::Mat4) {
+    fn compute(&self) -> (glam::Mat4, glam::Mat4) {
         let view = glam::Mat4::look_at_rh(self.eye, self.target, self.up);
         let proj = glam::Mat4::perspective_rh(
             self.fovy.to_radians(),
@@ -65,15 +57,14 @@ impl Camera {
             self.z_far,
         );
 
-        (TO_WGPU_MATRIX * proj * view, view.inverse(), proj.inverse())
+        (view.inverse(), proj.inverse())
     }
 
-    pub fn uniform(&self) -> CameraUniform {
+    pub fn uniform(&self) -> Uniforms {
         let computed = self.compute();
-        CameraUniform {
-            view_proj: computed.0.to_cols_array_2d(),
-            view_inverse: computed.1.to_cols_array_2d(),
-            proj_inverse: computed.2.to_cols_array_2d(),
+        Uniforms {
+            view_inv: computed.0,
+            proj_inv: computed.1,
         }
     }
 

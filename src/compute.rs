@@ -1,3 +1,4 @@
+use wgpu::CommandEncoder;
 use winit::dpi::PhysicalSize;
 
 use crate::texture;
@@ -5,9 +6,7 @@ use crate::texture;
 pub struct ComputePassLoader {
     pub texture_loader: texture::Texture,
     compute_pipeline: wgpu::ComputePipeline,
-
-    texture_bind_group: wgpu::BindGroup,
-    camera_bind_group: wgpu::BindGroup,
+    bind_group: wgpu::BindGroup,
 }
 
 impl ComputePassLoader {
@@ -15,14 +14,15 @@ impl ComputePassLoader {
         size: PhysicalSize<u32>,
         device: &wgpu::Device,
         camera_buffer: &wgpu::Buffer,
+        tlas: &wgpu::Tlas,
     ) -> Self {
         let texture_loader =
             texture::Texture::new(size, device, Some("RayTracingCompute::output")).unwrap();
 
-        let texture_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("RayTracingCompute::texture_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("RayTracingCompute::texture_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
@@ -31,14 +31,9 @@ impl ComputePassLoader {
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                     count: None,
-                }],
-            });
-
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("RayTracingCompute::camera_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -46,12 +41,21 @@ impl ComputePassLoader {
                         min_binding_size: None,
                     },
                     count: None,
-                }],
-            });
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::AccelerationStructure {
+                        vertex_return: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("RayTracingCompute::pipeline_layout"),
-            bind_group_layouts: &[&texture_bind_group_layout, &camera_bind_group_layout],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -66,46 +70,40 @@ impl ComputePassLoader {
             cache: None,
         });
 
-        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("RayTracingCompute::texture_bind_group"),
-            layout: &texture_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&texture_loader.view),
-            }],
-        });
-
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("RayTracingCompute::camera_bind_group"),
-            layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture_loader.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::AccelerationStructure(tlas),
+                },
+            ],
         });
 
         Self {
             texture_loader,
             compute_pipeline,
-            texture_bind_group,
-            camera_bind_group,
+            bind_group,
         }
     }
 
-    pub fn render(&self, size: PhysicalSize<u32>, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let mut encoder = device.create_command_encoder(&Default::default());
+    pub fn render(&self, size: PhysicalSize<u32>, encoder: &mut CommandEncoder) {
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("RayTracingCompute::compute_pass"),
             ..Default::default()
         });
 
         pass.set_pipeline(&self.compute_pipeline);
-        pass.set_bind_group(0, &self.texture_bind_group, &[]);
-        pass.set_bind_group(1, &self.camera_bind_group, &[]);
+        pass.set_bind_group(0, &self.bind_group, &[]);
         pass.dispatch_workgroups(size.width / 16, size.height / 16, 1);
-
-        drop(pass);
-
-        queue.submit([encoder.finish()]);
     }
 }

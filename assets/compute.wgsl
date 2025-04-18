@@ -1,51 +1,31 @@
-struct CameraUniform {
-    view_proj: mat4x4<f32>,
-    view_inverse: mat4x4<f32>,
-    proj_inverse: mat4x4<f32>,
-};
-
-struct Ray {
-    origin: vec3<f32>,
-    direction: vec3<f32>,
-};
-
-struct Sphere {
-    center: vec3<f32>,
-    radius: f32
+struct Uniforms {
+    view_inv: mat4x4<f32>,
+    proj_inv: mat4x4<f32>,
 };
 
 @group(0)
 @binding(0)
 var output: texture_storage_2d<bgra8unorm, write>;
 
-@group(1)
-@binding(0)
-var<uniform> camera: CameraUniform; 
+@group(0)
+@binding(1)
+var<uniform> uniforms: Uniforms; 
 
-fn ray_hit_sphere(ray: Ray, sphere: Sphere) -> f32 {
-    let origin_center = ray.origin - sphere.center;
-    let b = dot(origin_center, ray.direction);
-    let c = dot(origin_center, origin_center) - sphere.radius * sphere.radius;
-    let h = b * b - c;
-    if h < 0.0 { return -1.0; }
-    let h_sqrt = sqrt(h);
-    return min(-b - h_sqrt, -b + h_sqrt);
-}
+@group(0)
+@binding(2)
+var acc_struct: acceleration_structure;
 
-fn render(pixel_pos: vec2<f32>) -> vec4<f32> {
-    let size = vec2<f32>(textureDimensions(output).xy);
+fn render(origin: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
+    var rq: ray_query;
+    rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xFFu, 0.1, 200.0, origin, direction));
+    rayQueryProceed(&rq);
 
-    let d = pixel_pos * 2.0 - 1.0;
+    let intersection = rayQueryGetCommittedIntersection(&rq);
+    if intersection.kind != RAY_QUERY_INTERSECTION_NONE {
+        return vec4<f32>(intersection.barycentrics, 1.0 - intersection.barycentrics.x - intersection.barycentrics.y, 1.0);
+    }
 
-    let world_origin = (camera.view_inverse * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
-    let world_target = (camera.proj_inverse * vec4<f32>(d.x, d.y, 1.0, 1.0)).xyz;
-    let world_direction = (camera.view_inverse * vec4<f32>(normalize(world_target), 0.0)).xyz;
-
-    let ray = Ray(world_origin, world_direction);
-    let sphere = Sphere(vec3<f32>(0.0, 0.0, 10.0), 1.0);
-    let hit_sphere = ray_hit_sphere(ray, sphere);
-
-    return vec4<f32>(vec3<f32>(clamp(hit_sphere, 0.0, 1.0)), 1.0);
+    return vec4<f32>(0.0);
 }
 
 
@@ -53,13 +33,19 @@ fn render(pixel_pos: vec2<f32>) -> vec4<f32> {
 @workgroup_size(16, 16, 1)
 fn compute_ray_tracing(
     @builtin(global_invocation_id)
-    gid: vec3<u32>,
+    global_id: vec3<u32>,
 ) {
-    let size = vec2<f32>(textureDimensions(output).xy);
+    let target_size = textureDimensions(output);
 
-    let location = vec2<i32>(i32(gid.x), i32(gid.y));
-    let pixel = vec2<f32>(f32(gid.x) / size.x, f32(gid.y) / size.y);
-    var color = render(pixel);
+    let pixel_center = vec2<f32>(global_id.xy) + vec2<f32>(0.5);
+    let in_uv = pixel_center / vec2<f32>(target_size.xy);
+    let d = in_uv * 2.0 - 1.0;
 
-    textureStore(output, gid.xy, color);
+    let origin = (uniforms.view_inv * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+    let temp = uniforms.proj_inv * vec4<f32>(d.x, d.y, 1.0, 1.0);
+    let direction = (uniforms.view_inv * vec4<f32>(normalize(temp.xyz), 0.0)).xyz;
+
+    let color = render(origin, direction);
+
+    textureStore(output, global_id.xy, color);
 }

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 bytemuck = "1.22.0"
-glam = "0.30.2"
+glam = { version = "0.30.2", features = ["bytemuck"] }
 pollster = "0.4.0"
 wgpu = "25.0.0"
 winit = "0.30.9"

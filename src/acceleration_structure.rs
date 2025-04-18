@@ -1,182 +1,140 @@
-const CUBE_VERTICES_LEN: usize = 3 * 2 * 6;
+use std::mem;
+
+use bytemuck::{Pod, Zeroable};
+use wgpu::util::DeviceExt;
+
+pub const SIDE_COUNT: u32 = 32;
+pub const AS_COUNT: u32 = SIDE_COUNT * SIDE_COUNT * SIDE_COUNT;
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex3D {
-    position: [f32; 3],
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct Vertex {
+    _pos: [f32; 4],
+    _tex_coord: [f32; 2],
 }
 
-pub fn triangles_from_box(position: glam::Vec3) -> [Vertex3D; CUBE_VERTICES_LEN] {
-    let glam::Vec3 { x, y, z } = position;
+fn vertex(pos: [i8; 3], tc: [i8; 2]) -> Vertex {
+    Vertex {
+        _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
+        _tex_coord: [tc[0] as f32, tc[1] as f32],
+    }
+}
 
+fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
+    let vertex_data = [
+        // top (0, 0, 1)
+        vertex([-1, -1, 1], [0, 0]),
+        vertex([1, -1, 1], [1, 0]),
+        vertex([1, 1, 1], [1, 1]),
+        vertex([-1, 1, 1], [0, 1]),
+        // bottom (0, 0, -1)
+        vertex([-1, 1, -1], [1, 0]),
+        vertex([1, 1, -1], [0, 0]),
+        vertex([1, -1, -1], [0, 1]),
+        vertex([-1, -1, -1], [1, 1]),
+        // right (1, 0, 0)
+        vertex([1, -1, -1], [0, 0]),
+        vertex([1, 1, -1], [1, 0]),
+        vertex([1, 1, 1], [1, 1]),
+        vertex([1, -1, 1], [0, 1]),
+        // left (-1, 0, 0)
+        vertex([-1, -1, 1], [1, 0]),
+        vertex([-1, 1, 1], [0, 0]),
+        vertex([-1, 1, -1], [0, 1]),
+        vertex([-1, -1, -1], [1, 1]),
+        // front (0, 1, 0)
+        vertex([1, 1, -1], [1, 0]),
+        vertex([-1, 1, -1], [0, 0]),
+        vertex([-1, 1, 1], [0, 1]),
+        vertex([1, 1, 1], [1, 1]),
+        // back (0, -1, 0)
+        vertex([1, -1, 1], [0, 0]),
+        vertex([-1, -1, 1], [1, 0]),
+        vertex([-1, -1, -1], [1, 1]),
+        vertex([1, -1, -1], [0, 1]),
+    ];
+
+    let index_data: &[u16] = &[
+        0, 1, 2, 2, 3, 0, // top
+        4, 5, 6, 6, 7, 4, // bottom
+        8, 9, 10, 10, 11, 8, // right
+        12, 13, 14, 14, 15, 12, // left
+        16, 17, 18, 18, 19, 16, // front
+        20, 21, 22, 22, 23, 20, // back
+    ];
+
+    (vertex_data.to_vec(), index_data.to_vec())
+}
+
+#[inline]
+pub fn affine_to_rows(mat: &glam::Affine3A) -> [f32; 12] {
+    let row_0 = mat.matrix3.row(0);
+    let row_1 = mat.matrix3.row(1);
+    let row_2 = mat.matrix3.row(2);
+    let translation = mat.translation;
     [
-        // left face
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z + 0.5],
-        },
-        // right face
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        // bottom face
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z + 0.5],
-        },
-        // top face
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        // back face
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z + 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z + 0.5],
-        },
-        // front face
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y - 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x - 0.5, y + 0.5, z - 0.5],
-        },
-        Vertex3D {
-            position: [x + 0.5, y + 0.5, z - 0.5],
-        },
+        row_0.x,
+        row_0.y,
+        row_0.z,
+        translation.x,
+        row_1.x,
+        row_1.y,
+        row_1.z,
+        translation.y,
+        row_2.x,
+        row_2.y,
+        row_2.z,
+        translation.z,
     ]
 }
 
-pub struct AccelerationStructureBuilder {
+pub struct AccelerationStructureLoader {
     blas: wgpu::Blas,
-    tlas: wgpu::TlasPackage,
+    pub tlas: wgpu::TlasPackage,
 }
 
-impl AccelerationStructureBuilder {
+impl AccelerationStructureLoader {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
+        let (vertex_data, index_data) = create_vertices();
+
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertex_data),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT,
+        });
+
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&index_data),
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT,
+        });
+
         let descriptor = wgpu::BlasTriangleGeometrySizeDescriptor {
             vertex_format: wgpu::VertexFormat::Float32x3,
-            vertex_count: CUBE_VERTICES_LEN as u32,
-            index_count: None,
-            index_format: None,
+            vertex_count: vertex_data.len() as u32,
+            index_count: Some(index_data.len() as u32),
+            index_format: Some(wgpu::IndexFormat::Uint16),
             flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
         };
 
         let blas = device.create_blas(
             &wgpu::CreateBlasDescriptor {
-                label: Some("Cube geometry"),
+                label: None,
                 flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
                 update_mode: wgpu::AccelerationStructureUpdateMode::Build,
             },
             wgpu::BlasGeometrySizeDescriptors::Triangles {
-                descriptors: vec![descriptor],
+                descriptors: vec![descriptor.clone()],
             },
         );
 
-        let vertices = triangles_from_box(glam::Vec3::ZERO);
-
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("BLAS vertex buffer"),
-            size: vertices.len() as u64 * 3,
-            usage: wgpu::BufferUsages::BLAS_INPUT,
-            mapped_at_creation: false,
-        });
-
-        let blas_size = &wgpu::wgt::BlasTriangleGeometrySizeDescriptor {
-            vertex_format: wgpu::VertexFormat::Float32x3,
-            vertex_count: CUBE_VERTICES_LEN as u32,
-            index_format: None,
-            index_count: None,
-            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-        };
-
         let geometries = wgpu::BlasTriangleGeometry {
-            size: blas_size,
+            size: &descriptor,
             vertex_buffer: &vertex_buffer,
             first_vertex: 0,
-            vertex_stride: 3,
-            index_buffer: None,
-            first_index: None,
+            vertex_stride: mem::size_of::<Vertex>() as u64,
+            index_buffer: Some(&index_buffer),
+            first_index: Some(0),
             transform_buffer: None,
             transform_buffer_offset: None,
         };
@@ -188,36 +146,31 @@ impl AccelerationStructureBuilder {
 
         let tlas_inner = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("Cube instances"),
-            max_instances: 2u32.pow(24),
+            max_instances: SIDE_COUNT * SIDE_COUNT * SIDE_COUNT,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: wgpu::AccelerationStructureUpdateMode::PreferUpdate,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
 
         let mut tlas_instances = vec![];
 
-        for x in 0..16 {
-            for z in 0..16 {
-                let translation = glam::vec3(x as f32, 0.0, z as f32);
-                let transform = glam::Mat4::from_translation(translation);
+        for x in 0..SIDE_COUNT {
+            for y in 0..SIDE_COUNT {
+                for z in 0..SIDE_COUNT {
+                    let translation = glam::vec3(x as f32, y as f32, z as f32 + 30.0);
+                    let affine = glam::Affine3A::from_scale_rotation_translation(
+                        glam::Vec3::splat(0.5),
+                        glam::Quat::IDENTITY,
+                        translation,
+                    );
 
-                let col_0 = transform.col(0).to_array();
-                let col_1 = transform.col(1).to_array();
-                let col_2 = transform.col(2).to_array();
+                    let instance = wgpu::TlasInstance::new(&blas, affine_to_rows(&affine), 0, 0xff);
 
-                let transform_array: [f32; 12] = unsafe {
-                    let mut result = std::mem::MaybeUninit::uninit();
-                    let dest = result.as_mut_ptr() as *mut f32;
-                    std::ptr::copy_nonoverlapping(col_0.as_ptr(), dest, 4);
-                    std::ptr::copy_nonoverlapping(col_1.as_ptr(), dest.add(4), 4);
-                    std::ptr::copy_nonoverlapping(col_2.as_ptr(), dest.add(8), 4);
-                    result.assume_init()
-                };
-
-                let instance = wgpu::TlasInstance::new(&blas, transform_array, 0, 0xff);
-
-                tlas_instances.push(Some(instance));
+                    tlas_instances.push(Some(instance));
+                }
             }
         }
+
+        dbg!(tlas_instances.len());
 
         let tlas = wgpu::TlasPackage::new_with_instances(tlas_inner, tlas_instances);
 
