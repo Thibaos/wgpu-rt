@@ -4,7 +4,7 @@ use wgpu::util::DeviceExt;
 use winit::{event::WindowEvent, window::Window};
 
 use crate::{
-    acceleration_structure::{AS_COUNT, AccelerationStructureLoader, affine_to_rows},
+    acceleration_structure::{AS_COUNT, AccelerationStructureLoader},
     camera::Camera,
     compute::ComputePassLoader,
 };
@@ -45,14 +45,14 @@ impl<'a> State<'a> {
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
-                required_features: wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE
-                    | wgpu::Features::EXPERIMENTAL_RAY_QUERY
+                required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY
                     | wgpu::Features::BGRA8UNORM_STORAGE,
                 required_limits: if cfg!(target_arch = "wasm32") {
                     wgpu::Limits::downlevel_webgl2_defaults()
                 } else {
-                    wgpu::Limits::default()
+                    wgpu::Limits::default().using_minimum_supported_acceleration_structure_values()
                 },
+                experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 label: None,
                 memory_hints: Default::default(),
                 trace: wgpu::Trace::Off,
@@ -91,7 +91,7 @@ impl<'a> State<'a> {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let compute = ComputePassLoader::new(size, &device, &camera_buffer, as_loader.tlas.tlas());
+        let compute = ComputePassLoader::new(size, &device, &camera_buffer, &as_loader.tlas);
 
         Self {
             surface,
@@ -119,7 +119,7 @@ impl<'a> State<'a> {
                 new_size,
                 &self.device,
                 &self.camera_buffer,
-                self.as_loader.tlas.tlas(),
+                &self.as_loader.tlas,
             );
         }
     }

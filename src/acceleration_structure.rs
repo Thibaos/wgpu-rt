@@ -90,7 +90,7 @@ pub fn affine_to_rows(mat: &glam::Affine3A) -> [f32; 12] {
 
 pub struct AccelerationStructureLoader {
     blas: wgpu::Blas,
-    pub tlas: wgpu::TlasPackage,
+    pub tlas: wgpu::Tlas,
 }
 
 impl AccelerationStructureLoader {
@@ -144,14 +144,12 @@ impl AccelerationStructureLoader {
             geometry: wgpu::BlasGeometries::TriangleGeometries(vec![geometries]),
         };
 
-        let tlas_inner = device.create_tlas(&wgpu::CreateTlasDescriptor {
+        let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("Cube instances"),
             max_instances: SIDE_COUNT * SIDE_COUNT * SIDE_COUNT,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
         });
-
-        let mut tlas_instances = vec![];
 
         for x in 0..SIDE_COUNT {
             for y in 0..SIDE_COUNT {
@@ -165,14 +163,11 @@ impl AccelerationStructureLoader {
 
                     let instance = wgpu::TlasInstance::new(&blas, affine_to_rows(&affine), 0, 0xff);
 
-                    tlas_instances.push(Some(instance));
+                    tlas[(x + y * SIDE_COUNT + z * SIDE_COUNT * SIDE_COUNT) as usize] =
+                        Some(instance);
                 }
             }
         }
-
-        dbg!(tlas_instances.len());
-
-        let tlas = wgpu::TlasPackage::new_with_instances(tlas_inner, tlas_instances);
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });

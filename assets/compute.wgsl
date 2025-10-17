@@ -30,7 +30,7 @@ fn render(origin: vec3<f32>, direction: vec3<f32>) -> vec4<f32> {
 
 
 @compute
-@workgroup_size(16, 16, 1)
+@workgroup_size(8, 8, 1)
 fn compute_ray_tracing(
     @builtin(global_invocation_id)
     global_id: vec3<u32>,

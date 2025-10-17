@@ -36,10 +36,10 @@ impl ApplicationHandler for Application<'_> {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let WindowEvent::KeyboardInput { .. } = event {
-            if let Some(state) = self.state.as_mut() {
-                state.input(&event);
-            }
+        if let WindowEvent::KeyboardInput { .. } = event
+            && let Some(state) = self.state.as_mut()
+        {
+            state.input(&event);
         }
 
         match event {

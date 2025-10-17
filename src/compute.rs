@@ -104,6 +104,6 @@ impl ComputePassLoader {
 
         pass.set_pipeline(&self.compute_pipeline);
         pass.set_bind_group(0, &self.bind_group, &[]);
-        pass.dispatch_workgroups(size.width / 16, size.height / 16, 1);
+        pass.dispatch_workgroups(size.width / 8, size.height / 8, 1);
     }
 }
