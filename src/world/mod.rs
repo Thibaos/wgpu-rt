@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 pub mod chunks;
+pub mod generate;
 pub mod loader;
 pub mod voxels;
 

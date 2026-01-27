@@ -196,9 +196,8 @@ impl Chunk {
     }
 }
 
-pub type ChunksInner = HashMap<IVec3, Chunk>;
+type ChunksInner = HashMap<IVec3, Chunk>;
 
-#[derive(Default)]
 pub struct Chunks {
     inner: ChunksInner,
 }
@@ -231,15 +230,17 @@ impl Chunks {
             .isqrt()
     }
 
-    fn create_empty_chunks() -> ChunksInner {
-        (-WORLD_WIDTH..WORLD_WIDTH)
+    pub fn empty() -> Self {
+        let inner = (-WORLD_WIDTH..WORLD_WIDTH)
             .flat_map(move |x| {
                 (-WORLD_HEIGHT..WORLD_HEIGHT).flat_map(move |y| {
                     (-WORLD_DEPTH..WORLD_DEPTH)
                         .map(move |z| (IVec3::new(x, y, z), Chunk::default()))
                 })
             })
-            .collect()
+            .collect();
+
+        Self { inner }
     }
 
     pub fn active_chunks(&self) -> impl Iterator<Item = &IVec3> {
@@ -293,52 +294,7 @@ impl Chunks {
         (grid_position, local_position)
     }
 
-    pub fn new(voxel_data: &DotVoxData) -> Self {
-        let mut chunks = Chunks::create_empty_chunks();
-
-        let mut loader = SceneGraphTraverser {
-            chunks: &mut chunks,
-            scene: voxel_data,
-            models: vec![],
-        };
-
-        loader.traverse();
-
-        for (translation, rotation, size, voxels) in loader.models {
-            let transform = SceneGraphTraverser::to_transform(translation, rotation, size);
-
-            for voxel in voxels {
-                let local_position =
-                    UVec3::new(voxel.x as u32, voxel.z as u32, size.y - voxel.y as u32 - 1)
-                        .as_ivec3();
-
-                let position = (transform
-                    * Vec4::new(
-                        local_position.x as f32,
-                        local_position.y as f32,
-                        local_position.z as f32,
-                        1.0,
-                    ))
-                .xyz()
-                .as_ivec3();
-
-                let p = IVec3::new(position.x, -position.y, -position.z);
-
-                Chunks::insert_voxel(
-                    &mut chunks,
-                    p,
-                    HostVoxel {
-                        scale: 1.0,
-                        material_index: voxel.i.into(),
-                    },
-                );
-            }
-        }
-
-        Self { inner: chunks }
-    }
-
-    fn from(inner: ChunksInner) -> Self {
+    pub fn from_inner(inner: ChunksInner) -> Self {
         Self { inner }
     }
 
@@ -356,7 +312,7 @@ impl Chunks {
         lod: u32,
         origin: &IVec3,
         blas: &Blas,
-        max_instance_count: u64,
+        max_instance_count: u32,
     ) -> Vec<TlasInstance> {
         let mut chunks = self.active_chunks().collect::<Vec<_>>();
 
@@ -398,14 +354,13 @@ impl Chunks {
         chunk.voxels.get(&local_position)
     }
 
-    pub fn insert_voxel(
-        chunks: &mut ChunksInner,
-        position: IVec3,
-        voxel: HostVoxel,
-    ) -> Option<IVec3> {
+    pub fn insert_voxel(&mut self, position: IVec3, voxel: HostVoxel) -> Option<IVec3> {
         let (grid_position, local_position) = Chunks::translation_to_position(&position);
 
-        let current_chunk = chunks.get_mut(&grid_position).unwrap();
+        let current_chunk = self
+            .inner
+            .get_mut(&grid_position)
+            .expect(&format!("Grid position not found! ({:?})", grid_position));
 
         if !current_chunk.insert(local_position, voxel) {
             return None;
@@ -413,6 +368,20 @@ impl Chunks {
 
         Some(grid_position)
     }
+
+    // pub fn insert_voxel(chunks: &mut ChunksInner) -> Option<IVec3> {
+    //     let (grid_position, local_position) = Chunks::translation_to_position(&position);
+
+    //     let current_chunk = chunks
+    //         .get_mut(&grid_position)
+    //         .expect(&format!("Grid position not found! ({:?})", grid_position));
+
+    //     if !current_chunk.insert(local_position, voxel) {
+    //         return None;
+    //     }
+
+    //     Some(grid_position)
+    // }
 }
 
 impl Display for Chunks {
@@ -465,7 +434,7 @@ mod test {
 
     #[test]
     fn chunks_insert() {
-        let mut chunks = Chunks::create_empty_chunks();
+        let mut chunks = Chunks::empty();
 
         let size = CHUNK_WIDTH as i32;
 
@@ -488,7 +457,11 @@ mod test {
             assert!(grid_position == IVec3::new(x / size, 0, 0));
         }
 
-        let sum = chunks.values().map(|c| c.voxels.len() as u32).sum::<u32>();
+        let sum = chunks
+            .inner
+            .values()
+            .map(|c| c.voxels.len() as u32)
+            .sum::<u32>();
 
         assert!(sum == WORLD_WIDTH as u32 * CHUNK_WIDTH);
     }
@@ -512,15 +485,13 @@ mod test {
 
     #[test]
     fn chunks_contains() {
-        let mut inner = Chunks::create_empty_chunks();
+        let mut chunks = Chunks::empty();
 
         let pos1 = IVec3::new(1, 1, 1);
         let pos2 = IVec3::new(120, 129, -215);
 
-        Chunks::insert_voxel(&mut inner, pos1, HostVoxel::default());
-        Chunks::insert_voxel(&mut inner, pos2, HostVoxel::default());
-
-        let chunks = Chunks::from(inner);
+        chunks.insert_voxel(pos1, HostVoxel::default());
+        chunks.insert_voxel(pos2, HostVoxel::default());
 
         assert!(chunks.contains(&pos1));
         assert!(chunks.contains(&pos2));

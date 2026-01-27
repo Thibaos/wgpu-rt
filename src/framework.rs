@@ -29,7 +29,10 @@ impl EventLoopWrapper {
         let event_loop = EventLoop::new().unwrap();
         let mut builder = winit::window::WindowBuilder::new();
 
-        builder = builder.with_title(title);
+        builder = builder
+            .with_title(title)
+            .with_inner_size(PhysicalSize::new(1920, 1080));
+
         let window = Arc::new(builder.build(&event_loop).unwrap());
 
         Self { event_loop, window }

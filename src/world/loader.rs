@@ -3,10 +3,10 @@ use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
 
 use crate::world::HostVoxel;
 
-use super::chunks::{Chunks, ChunksInner};
+use super::chunks::Chunks;
 
 pub struct SceneGraphTraverser<'a> {
-    pub chunks: &'a mut ChunksInner,
+    pub chunks: &'a mut Chunks,
     pub scene: &'a DotVoxData,
     pub models: Vec<(IVec3, Rotation, UVec3, Vec<Voxel>)>,
 }
@@ -15,8 +15,7 @@ impl SceneGraphTraverser<'_> {
     pub fn traverse(&mut self) {
         if self.scene.scenes.is_empty() {
             for voxel in self.scene.models.iter().flat_map(|model| &model.voxels) {
-                Chunks::insert_voxel(
-                    self.chunks,
+                self.chunks.insert_voxel(
                     IVec3::new(voxel.x as i32, voxel.z as i32, voxel.y as i32),
                     HostVoxel {
                         scale: 1.0,

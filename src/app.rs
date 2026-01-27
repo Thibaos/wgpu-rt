@@ -1,13 +1,13 @@
 use std::{borrow::Cow, iter, mem};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Affine3A, Mat4, Quat, Vec3};
+use glam::{IVec3, Mat4, Vec3};
 use wgpu::util::DeviceExt;
 
 use wgpu::StoreOp;
 
-use crate::utils;
 use crate::world::Vertex;
+use crate::world::generate::random_world_gen;
 use crate::world::voxels::triangles_from_box;
 
 #[repr(C)]
@@ -15,28 +15,6 @@ use crate::world::voxels::triangles_from_box;
 struct Uniforms {
     view_inverse: Mat4,
     proj_inverse: Mat4,
-}
-
-#[inline]
-fn affine_to_rows(mat: &Affine3A) -> [f32; 12] {
-    let row_0 = mat.matrix3.row(0);
-    let row_1 = mat.matrix3.row(1);
-    let row_2 = mat.matrix3.row(2);
-    let translation = mat.translation;
-    [
-        row_0.x,
-        row_0.y,
-        row_0.z,
-        translation.x,
-        row_1.x,
-        row_1.y,
-        row_1.z,
-        translation.y,
-        row_2.x,
-        row_2.y,
-        row_2.z,
-        translation.z,
-    ]
 }
 
 pub struct App {
@@ -56,11 +34,11 @@ pub struct App {
     compute_bind_group: wgpu::BindGroup,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
-    animation_timer: utils::AnimationTimer,
 }
 
 impl App {
     pub const SRGB: bool = true;
+    pub const MAX_INSTANCE_COUNT: u32 = 2u32.pow(16) - 1;
 
     pub fn required_features() -> wgpu::Features {
         wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -89,8 +67,6 @@ impl App {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> Self {
-        let side_count = 8;
-
         let rt_target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rt_target"),
             size: wgpu::Extent3d {
@@ -187,7 +163,7 @@ impl App {
             label: None,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            max_instances: side_count * side_count,
+            max_instances: Self::MAX_INSTANCE_COUNT as u32,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -276,24 +252,13 @@ impl App {
             ],
         });
 
-        let dist = 3.0;
-
-        for x in 0..side_count {
-            for y in 0..side_count {
-                tlas[(x + y * side_count) as usize] = Some(wgpu::TlasInstance::new(
-                    &blas,
-                    affine_to_rows(&Affine3A::from_rotation_translation(
-                        Quat::from_rotation_y(45.9_f32.to_radians()),
-                        Vec3 {
-                            x: x as f32 * dist,
-                            y: y as f32 * dist,
-                            z: -30.0,
-                        },
-                    )),
-                    0,
-                    0xff,
-                ));
-            }
+        let world = random_world_gen();
+        for (i, instance) in world
+            .to_instances(0, &IVec3::ZERO, &blas, App::MAX_INSTANCE_COUNT)
+            .into_iter()
+            .enumerate()
+        {
+            tlas[i] = Some(instance);
         }
 
         let mut encoder =
@@ -339,7 +304,6 @@ impl App {
             compute_bind_group,
             blit_pipeline,
             blit_bind_group,
-            animation_timer: utils::AnimationTimer::default(),
         }
     }
 
@@ -356,27 +320,8 @@ impl App {
     }
 
     pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
-        // let anim_time = self.animation_timer.time();
-
-        // self.tlas[0].as_mut().unwrap().transform =
-        //     affine_to_rows(&Affine3A::from_rotation_translation(
-        //         Quat::from_euler(
-        //             glam::EulerRot::XYZ,
-        //             anim_time * 0.342,
-        //             anim_time * 0.254,
-        //             anim_time * 0.832,
-        //         ),
-        //         Vec3 {
-        //             x: 0.0,
-        //             y: 0.0,
-        //             z: -6.0,
-        //         },
-        //     ));
-
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        // encoder.build_acceleration_structures(iter::empty(), iter::once(&self.tlas));
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
