@@ -346,4 +346,4 @@ pub fn run() {
     pollster::block_on(start());
 }
 
-use crate::{ray_cube_compute::App, utils::get_adapter_with_capabilities_or_from_env};
+use crate::{app::App, utils::get_adapter_with_capabilities_or_from_env};
