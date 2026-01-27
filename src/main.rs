@@ -1,21 +1,5 @@
-use std::error::Error;
+use wgpu_rt::ray_cube_compute;
 
-use app::Application;
-use winit::event_loop::EventLoop;
-
-mod acceleration_structure;
-mod app;
-mod camera;
-mod compute;
-mod state;
-mod texture;
-
-fn main() -> Result<(), Box<dyn Error>> {
-    let event_loop = EventLoop::new()?;
-
-    let mut app = Application::default();
-
-    event_loop.run_app(&mut app)?;
-
-    Ok(())
+fn main() {
+    wgpu_rt::framework::run::<ray_cube_compute::Example>("ray-cube");
 }
