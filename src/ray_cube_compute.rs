@@ -118,25 +118,31 @@ pub struct App {
     animation_timer: utils::AnimationTimer,
 }
 
-impl crate::framework::AppSingleton for App {
-    fn required_features() -> wgpu::Features {
+impl App {
+    pub const SRGB: bool = true;
+
+    pub fn required_features() -> wgpu::Features {
         wgpu::Features::TEXTURE_BINDING_ARRAY
             | wgpu::Features::VERTEX_WRITABLE_STORAGE
             | wgpu::Features::EXPERIMENTAL_RAY_QUERY
     }
 
-    fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
+    pub fn optional_features() -> wgpu::Features {
+        wgpu::Features::empty()
+    }
+
+    pub fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
         wgpu::DownlevelCapabilities {
             flags: wgpu::DownlevelFlags::COMPUTE_SHADERS,
             ..Default::default()
         }
     }
 
-    fn required_limits() -> wgpu::Limits {
+    pub fn required_limits() -> wgpu::Limits {
         wgpu::Limits::default().using_minimum_supported_acceleration_structure_values()
     }
 
-    fn init(
+    pub fn init(
         config: &wgpu::SurfaceConfiguration,
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
@@ -371,6 +377,13 @@ impl crate::framework::AppSingleton for App {
 
         queue.submit(Some(encoder.finish()));
 
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        encoder.build_acceleration_structures(iter::empty(), iter::once(&tlas));
+
+        queue.submit(Some(encoder.finish()));
+
         App {
             rt_target,
             rt_view,
@@ -387,11 +400,11 @@ impl crate::framework::AppSingleton for App {
         }
     }
 
-    fn update(&mut self, _event: winit::event::WindowEvent) {
+    pub fn update(&mut self, _event: winit::event::WindowEvent) {
         //empty
     }
 
-    fn resize(
+    pub fn resize(
         &mut self,
         _config: &wgpu::SurfaceConfiguration,
         _device: &wgpu::Device,
@@ -399,28 +412,28 @@ impl crate::framework::AppSingleton for App {
     ) {
     }
 
-    fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
-        let anim_time = self.animation_timer.time();
+    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+        // let anim_time = self.animation_timer.time();
 
-        self.tlas[0].as_mut().unwrap().transform =
-            affine_to_rows(&Affine3A::from_rotation_translation(
-                Quat::from_euler(
-                    glam::EulerRot::XYZ,
-                    anim_time * 0.342,
-                    anim_time * 0.254,
-                    anim_time * 0.832,
-                ),
-                Vec3 {
-                    x: 0.0,
-                    y: 0.0,
-                    z: -6.0,
-                },
-            ));
+        // self.tlas[0].as_mut().unwrap().transform =
+        //     affine_to_rows(&Affine3A::from_rotation_translation(
+        //         Quat::from_euler(
+        //             glam::EulerRot::XYZ,
+        //             anim_time * 0.342,
+        //             anim_time * 0.254,
+        //             anim_time * 0.832,
+        //         ),
+        //         Vec3 {
+        //             x: 0.0,
+        //             y: 0.0,
+        //             z: -6.0,
+        //         },
+        //     ));
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        encoder.build_acceleration_structures(iter::empty(), iter::once(&self.tlas));
+        // encoder.build_acceleration_structures(iter::empty(), iter::once(&self.tlas));
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -457,8 +470,4 @@ impl crate::framework::AppSingleton for App {
 
         queue.submit(Some(encoder.finish()));
     }
-}
-
-pub fn main() {
-    crate::framework::run::<App>("ray-cube");
 }

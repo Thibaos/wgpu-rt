@@ -1,5 +1,7 @@
-use wgpu_rt::ray_cube_compute;
+pub mod framework;
+pub mod ray_cube_compute;
+pub mod utils;
 
 fn main() {
-    wgpu_rt::framework::run::<ray_cube_compute::App>("ray-cube");
+    framework::run();
 }

@@ -9,48 +9,6 @@ use winit::{
     window::Window,
 };
 
-pub trait AppSingleton: 'static + Sized {
-    const SRGB: bool = true;
-
-    fn optional_features() -> wgpu::Features {
-        wgpu::Features::empty()
-    }
-
-    fn required_features() -> wgpu::Features {
-        wgpu::Features::empty()
-    }
-
-    fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
-        wgpu::DownlevelCapabilities {
-            flags: wgpu::DownlevelFlags::empty(),
-            shader_model: wgpu::ShaderModel::Sm5,
-            ..wgpu::DownlevelCapabilities::default()
-        }
-    }
-
-    fn required_limits() -> wgpu::Limits {
-        wgpu::Limits::downlevel_webgl2_defaults() // These downlevel limits will allow the code to run on all possible hardware
-    }
-
-    fn init(
-        config: &wgpu::SurfaceConfiguration,
-        adapter: &wgpu::Adapter,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    ) -> Self;
-
-    fn resize(
-        &mut self,
-        config: &wgpu::SurfaceConfiguration,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-    );
-
-    fn update(&mut self, event: WindowEvent);
-
-    fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue);
-}
-
 // Initialize logging in platform dependant ways.
 fn init_logger() {
     // parse_default_env will read the RUST_LOG environment variable and apply it on top
@@ -207,21 +165,22 @@ struct RenderContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
+
 impl RenderContext {
-    async fn init_async<E: AppSingleton>(surface: &mut SurfaceWrapper) -> Self {
+    async fn init_async(surface: &mut SurfaceWrapper) -> Self {
         log::info!("Initializing wgpu...");
 
         let instance_descriptor = wgpu::InstanceDescriptor::from_env_or_default();
         let instance = wgpu::Instance::new(&instance_descriptor);
         let adapter = get_adapter_with_capabilities_or_from_env(
             &instance,
-            &E::required_features(),
-            &E::required_downlevel_capabilities(),
+            &App::required_features(),
+            &App::required_downlevel_capabilities(),
             &surface.get(),
         )
         .await;
         // Make sure we use the texture resolution limits from the adapter, so we can support images the size of the surface.
-        let needed_limits = E::required_limits().using_resolution(adapter.limits());
+        let needed_limits = App::required_limits().using_resolution(adapter.limits());
 
         let info = adapter.get_info();
         log::info!("Selected adapter: {} ({:?})", info.name, info.backend);
@@ -229,8 +188,8 @@ impl RenderContext {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: (E::optional_features() & adapter.features())
-                    | E::required_features(),
+                required_features: (App::optional_features() & adapter.features())
+                    | App::required_features(),
                 required_limits: needed_limits,
                 experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
@@ -279,7 +238,7 @@ impl FrameCounter {
     }
 }
 
-async fn start<E: AppSingleton>(title: &str) {
+async fn start() {
     init_logger();
 
     log::debug!(
@@ -287,9 +246,9 @@ async fn start<E: AppSingleton>(title: &str) {
         wgpu::Instance::enabled_backend_features()
     );
 
-    let window_loop = EventLoopWrapper::new(title);
+    let window_loop = EventLoopWrapper::new("Ray Cube");
     let mut surface = SurfaceWrapper::new();
-    let context = RenderContext::init_async::<E>(&mut surface).await;
+    let context = RenderContext::init_async(&mut surface).await;
     let mut frame_counter = FrameCounter::new();
 
     let mut app = None;
@@ -302,10 +261,10 @@ async fn start<E: AppSingleton>(title: &str) {
         move |event: Event<()>, target: &EventLoopWindowTarget<()>| {
             match event {
                 ref e if SurfaceWrapper::start_condition(e) => {
-                    surface.resume(&context, window_loop.window.clone(), E::SRGB);
+                    surface.resume(&context, window_loop.window.clone(), App::SRGB);
 
                     if app.is_none() {
-                        app = Some(E::init(
+                        app = Some(App::init(
                             surface.config(),
                             &context.adapter,
                             &context.device,
@@ -383,8 +342,8 @@ async fn start<E: AppSingleton>(title: &str) {
     );
 }
 
-pub fn run<E: AppSingleton>(title: &'static str) {
-    pollster::block_on(start::<E>(title));
+pub fn run() {
+    pollster::block_on(start());
 }
 
-use crate::utils::get_adapter_with_capabilities_or_from_env;
+use crate::{ray_cube_compute::App, utils::get_adapter_with_capabilities_or_from_env};
