@@ -98,7 +98,7 @@ fn affine_to_rows(mat: &Affine3A) -> [f32; 12] {
     ]
 }
 
-pub struct Example {
+pub struct App {
     rt_target: wgpu::Texture,
     #[expect(dead_code)]
     rt_view: wgpu::TextureView,
@@ -118,7 +118,7 @@ pub struct Example {
     animation_timer: utils::AnimationTimer,
 }
 
-impl crate::framework::Example for Example {
+impl crate::framework::AppSingleton for App {
     fn required_features() -> wgpu::Features {
         wgpu::Features::TEXTURE_BINDING_ARRAY
             | wgpu::Features::VERTEX_WRITABLE_STORAGE
@@ -371,7 +371,7 @@ impl crate::framework::Example for Example {
 
         queue.submit(Some(encoder.finish()));
 
-        Example {
+        App {
             rt_target,
             rt_view,
             sampler,
@@ -460,5 +460,5 @@ impl crate::framework::Example for Example {
 }
 
 pub fn main() {
-    crate::framework::run::<Example>("ray-cube");
+    crate::framework::run::<App>("ray-cube");
 }

@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Instant};
 
-use wgpu::{Instance, Surface};
+use wgpu::Surface;
 use winit::{
     dpi::PhysicalSize,
     event::{Event, KeyEvent, StartCause, WindowEvent},
@@ -9,7 +9,7 @@ use winit::{
     window::Window,
 };
 
-pub trait Example: 'static + Sized {
+pub trait AppSingleton: 'static + Sized {
     const SRGB: bool = true;
 
     fn optional_features() -> wgpu::Features {
@@ -70,20 +70,7 @@ impl EventLoopWrapper {
     pub fn new(title: &str) -> Self {
         let event_loop = EventLoop::new().unwrap();
         let mut builder = winit::window::WindowBuilder::new();
-        #[cfg(target_arch = "wasm32")]
-        {
-            use wasm_bindgen::JsCast;
-            use winit::platform::web::WindowBuilderExtWebSys;
-            let canvas = web_sys::window()
-                .unwrap()
-                .document()
-                .unwrap()
-                .get_element_by_id("canvas")
-                .unwrap()
-                .dyn_into::<web_sys::HtmlCanvasElement>()
-                .unwrap();
-            builder = builder.with_canvas(Some(canvas));
-        }
+
         builder = builder.with_title(title);
         let window = Arc::new(builder.build(&event_loop).unwrap());
 
@@ -108,19 +95,6 @@ impl SurfaceWrapper {
         }
     }
 
-    /// Called after the instance is created, but before we request an adapter.
-    ///
-    /// On wasm, we need to create the surface here, as the WebGL backend needs
-    /// a surface (and hence a canvas) to be present to create the adapter.
-    ///
-    /// We cannot unconditionally create a surface here, as Android requires
-    /// us to wait until we receive the `Resumed` event to do so.
-    fn pre_adapter(&mut self, instance: &Instance, window: Arc<Window>) {
-        if cfg!(target_arch = "wasm32") {
-            self.surface = Some(instance.create_surface(window).unwrap());
-        }
-    }
-
     /// Check if the event is the start condition for the surface.
     fn start_condition(e: &Event<()>) -> bool {
         match e {
@@ -137,7 +111,7 @@ impl SurfaceWrapper {
     /// On all native platforms, this is where we create the surface.
     ///
     /// Additionally, we configure the surface based on the (now valid) window size.
-    fn resume(&mut self, context: &ExampleContext, window: Arc<Window>, srgb: bool) {
+    fn resume(&mut self, context: &RenderContext, window: Arc<Window>, srgb: bool) {
         // Window size is only actually valid after we enter the event loop.
         let window_size = window.inner_size();
         let width = window_size.width.max(1);
@@ -145,10 +119,7 @@ impl SurfaceWrapper {
 
         log::info!("Surface resume {window_size:?}");
 
-        // We didn't create the surface in pre_adapter, so we need to do so now.
-        if !cfg!(target_arch = "wasm32") {
-            self.surface = Some(context.instance.create_surface(window).unwrap());
-        }
+        self.surface = Some(context.instance.create_surface(window).unwrap());
 
         // From here on, self.surface should be Some.
 
@@ -175,7 +146,7 @@ impl SurfaceWrapper {
     }
 
     /// Resize the surface, making sure to not resize to zero.
-    fn resize(&mut self, context: &ExampleContext, size: PhysicalSize<u32>) {
+    fn resize(&mut self, context: &RenderContext, size: PhysicalSize<u32>) {
         log::info!("Surface resize {size:?}");
 
         let config = self.config.as_mut().unwrap();
@@ -186,7 +157,7 @@ impl SurfaceWrapper {
     }
 
     /// Acquire the next surface texture.
-    fn acquire(&mut self, context: &ExampleContext) -> wgpu::SurfaceTexture {
+    fn acquire(&mut self, context: &RenderContext) -> wgpu::SurfaceTexture {
         let surface = self.surface.as_ref().unwrap();
 
         match surface.get_current_texture() {
@@ -230,20 +201,18 @@ impl SurfaceWrapper {
 }
 
 /// Context containing global wgpu resources.
-struct ExampleContext {
+struct RenderContext {
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
 }
-impl ExampleContext {
-    /// Initializes the example context.
-    async fn init_async<E: Example>(surface: &mut SurfaceWrapper, window: Arc<Window>) -> Self {
+impl RenderContext {
+    async fn init_async<E: AppSingleton>(surface: &mut SurfaceWrapper) -> Self {
         log::info!("Initializing wgpu...");
 
         let instance_descriptor = wgpu::InstanceDescriptor::from_env_or_default();
         let instance = wgpu::Instance::new(&instance_descriptor);
-        surface.pre_adapter(&instance, window);
         let adapter = get_adapter_with_capabilities_or_from_env(
             &instance,
             &E::required_features(),
@@ -310,7 +279,7 @@ impl FrameCounter {
     }
 }
 
-async fn start<E: Example>(title: &str) {
+async fn start<E: AppSingleton>(title: &str) {
     init_logger();
 
     log::debug!(
@@ -320,16 +289,14 @@ async fn start<E: Example>(title: &str) {
 
     let window_loop = EventLoopWrapper::new(title);
     let mut surface = SurfaceWrapper::new();
-    let context = ExampleContext::init_async::<E>(&mut surface, window_loop.window.clone()).await;
+    let context = RenderContext::init_async::<E>(&mut surface).await;
     let mut frame_counter = FrameCounter::new();
 
-    // We wait to create the example until we have a valid surface.
-    let mut example = None;
+    let mut app = None;
 
     let event_loop_function = EventLoop::run;
 
     log::info!("Entering event loop...");
-    #[cfg_attr(target_arch = "wasm32", expect(clippy::let_unit_value))]
     let _ = (event_loop_function)(
         window_loop.event_loop,
         move |event: Event<()>, target: &EventLoopWindowTarget<()>| {
@@ -337,9 +304,8 @@ async fn start<E: Example>(title: &str) {
                 ref e if SurfaceWrapper::start_condition(e) => {
                     surface.resume(&context, window_loop.window.clone(), E::SRGB);
 
-                    // If we haven't created the example yet, do so now.
-                    if example.is_none() {
-                        example = Some(E::init(
+                    if app.is_none() {
+                        app = Some(E::init(
                             surface.config(),
                             &context.adapter,
                             &context.device,
@@ -353,7 +319,7 @@ async fn start<E: Example>(title: &str) {
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::Resized(size) => {
                         surface.resize(&context, size);
-                        example.as_mut().unwrap().resize(
+                        app.as_mut().unwrap().resize(
                             surface.config(),
                             &context.device,
                             &context.queue,
@@ -388,7 +354,7 @@ async fn start<E: Example>(title: &str) {
                         // If this happens, just drop the requested redraw on the floor.
                         //
                         // See https://github.com/rust-windowing/winit/issues/3235 for some discussion
-                        if example.is_none() {
+                        if app.is_none() {
                             return;
                         }
 
@@ -400,8 +366,7 @@ async fn start<E: Example>(title: &str) {
                             ..wgpu::TextureViewDescriptor::default()
                         });
 
-                        example
-                            .as_mut()
+                        app.as_mut()
                             .unwrap()
                             .render(&view, &context.device, &context.queue);
 
@@ -410,7 +375,7 @@ async fn start<E: Example>(title: &str) {
 
                         window_loop.window.request_redraw();
                     }
-                    _ => example.as_mut().unwrap().update(event),
+                    _ => app.as_mut().unwrap().update(event),
                 },
                 _ => {}
             }
@@ -418,27 +383,8 @@ async fn start<E: Example>(title: &str) {
     );
 }
 
-pub fn run<E: Example>(title: &'static str) {
+pub fn run<E: AppSingleton>(title: &'static str) {
     pollster::block_on(start::<E>(title));
-}
-
-#[cfg(target_arch = "wasm32")]
-/// Parse the query string as returned by `web_sys::window()?.location().search()?` and get a
-/// specific key out of it.
-pub fn parse_url_query_string<'a>(query: &'a str, search_key: &str) -> Option<&'a str> {
-    let query_string = query.strip_prefix('?')?;
-
-    for pair in query_string.split('&') {
-        let mut pair = pair.split('=');
-        let key = pair.next()?;
-        let value = pair.next()?;
-
-        if key == search_key {
-            return Some(value);
-        }
-    }
-
-    None
 }
 
 use crate::utils::get_adapter_with_capabilities_or_from_env;
