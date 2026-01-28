@@ -6,6 +6,7 @@ use wgpu::util::DeviceExt;
 
 use wgpu::StoreOp;
 
+use crate::player_controller::PlayerController;
 use crate::world::Vertex;
 use crate::world::generate::random_world_gen;
 use crate::world::voxels::triangles_from_box;
@@ -23,17 +24,18 @@ pub struct App {
     rt_view: wgpu::TextureView,
     #[expect(dead_code)]
     sampler: wgpu::Sampler,
-    #[expect(dead_code)]
     uniform_buf: wgpu::Buffer,
     #[expect(dead_code)]
     vertex_buf: wgpu::Buffer,
     #[expect(dead_code)]
     index_buf: wgpu::Buffer,
+    #[expect(dead_code)]
     tlas: wgpu::Tlas,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
+    player_controller: PlayerController,
 }
 
 impl App {
@@ -123,7 +125,7 @@ impl App {
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let (vertex_data, index_data) = triangles_from_box(Vec3::ZERO);
@@ -252,6 +254,8 @@ impl App {
             ],
         });
 
+        let player_controller = PlayerController::default();
+
         let world = random_world_gen();
         for (i, instance) in world
             .to_instances(0, &IVec3::ZERO, &blas, App::MAX_INSTANCE_COUNT)
@@ -304,12 +308,11 @@ impl App {
             compute_bind_group,
             blit_pipeline,
             blit_bind_group,
+            player_controller,
         }
     }
 
-    pub fn update(&mut self, _event: winit::event::WindowEvent) {
-        //empty
-    }
+    pub fn update(&mut self, _event: winit::event::WindowEvent) {}
 
     pub fn resize(
         &mut self,
@@ -320,6 +323,23 @@ impl App {
     }
 
     pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let uniforms = {
+            let view_mat = self.player_controller.view();
+            let proj_mat = Mat4::perspective_rh(
+                59.0_f32.to_radians(),
+                view.texture().width() as f32 / view.texture().height() as f32,
+                0.001,
+                1000.0,
+            );
+
+            Uniforms {
+                view_inverse: view_mat.inverse(),
+                proj_inverse: proj_mat.inverse(),
+            }
+        };
+
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
+
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 

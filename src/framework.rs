@@ -1,12 +1,12 @@
-use std::{sync::Arc, time::Instant};
+use std::{collections::HashSet, sync::Arc, time::Instant};
 
 use wgpu::Surface;
 use winit::{
     dpi::PhysicalSize,
-    event::{Event, KeyEvent, StartCause, WindowEvent},
+    event::{ElementState, Event, KeyEvent, StartCause, WindowEvent},
     event_loop::{EventLoop, EventLoopWindowTarget},
     keyboard::{Key, NamedKey},
-    window::Window,
+    window::{CursorGrabMode, Window},
 };
 
 // Initialize logging in platform dependant ways.
@@ -22,6 +22,8 @@ fn init_logger() {
 struct EventLoopWrapper {
     event_loop: EventLoop<()>,
     window: Arc<Window>,
+    pressed_keys: HashSet<NamedKey>,
+    cursor_grab_mode: CursorGrabMode,
 }
 
 impl EventLoopWrapper {
@@ -35,7 +37,12 @@ impl EventLoopWrapper {
 
         let window = Arc::new(builder.build(&event_loop).unwrap());
 
-        Self { event_loop, window }
+        Self {
+            event_loop,
+            window,
+            pressed_keys: HashSet::new(),
+            cursor_grab_mode: CursorGrabMode::None,
+        }
     }
 }
 
@@ -249,7 +256,7 @@ async fn start() {
         wgpu::Instance::enabled_backend_features()
     );
 
-    let window_loop = EventLoopWrapper::new("Ray Cube");
+    let mut window_loop = EventLoopWrapper::new("Ray Cube");
     let mut surface = SurfaceWrapper::new();
     let context = RenderContext::init_async(&mut surface).await;
     let mut frame_counter = FrameCounter::new();
@@ -292,15 +299,51 @@ async fn start() {
                     WindowEvent::KeyboardInput {
                         event:
                             KeyEvent {
-                                logical_key: Key::Named(NamedKey::Escape),
+                                logical_key: Key::Named(named_key),
+                                state: ElementState::Pressed,
                                 ..
                             },
                         ..
+                    } => {
+                        if named_key == NamedKey::Escape
+                            && !window_loop.pressed_keys.contains(&NamedKey::Escape)
+                        {
+                            match window_loop.cursor_grab_mode {
+                                CursorGrabMode::None => {
+                                    let new_grab_mode = CursorGrabMode::Confined;
+                                    window_loop.cursor_grab_mode = new_grab_mode;
+                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
+                                    window_loop.window.set_cursor_visible(false);
+
+                                    dbg!("set confined");
+                                }
+                                _ => {
+                                    let new_grab_mode = CursorGrabMode::None;
+                                    window_loop.cursor_grab_mode = new_grab_mode;
+                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
+                                    window_loop.window.set_cursor_visible(true);
+
+                                    dbg!("set free");
+                                }
+                            }
+                        }
+
+                        window_loop.pressed_keys.insert(named_key);
                     }
-                    | WindowEvent::CloseRequested => {
+                    WindowEvent::KeyboardInput {
+                        event:
+                            KeyEvent {
+                                logical_key: Key::Named(named_key),
+                                state: ElementState::Released,
+                                ..
+                            },
+                        ..
+                    } => {
+                        window_loop.pressed_keys.remove(&named_key);
+                    }
+                    WindowEvent::CloseRequested => {
                         target.exit();
                     }
-                    #[cfg(not(target_arch = "wasm32"))]
                     WindowEvent::KeyboardInput {
                         event:
                             KeyEvent {
