@@ -6,10 +6,7 @@ use std::{
 };
 
 use glam::{Mat4, Quat, Vec3, vec3};
-use winit::{
-    event::{ElementState, KeyEvent},
-    keyboard::{Key, NamedKey, SmolStr},
-};
+use winit::keyboard::{Key, NamedKey, SmolStr};
 
 const FORWARD: Key = Key::Character(SmolStr::new_static("z"));
 const LEFT: Key = Key::Character(SmolStr::new_static("q"));
@@ -21,7 +18,6 @@ const CONTROL: Key = Key::Named(NamedKey::Control);
 
 pub struct PlayerController {
     pub speed: f32,
-    pub pressed_keys: HashSet<Key>,
     pub sensitivity: f64,
     pub translation: Vec3,
 
@@ -38,7 +34,6 @@ impl Default for PlayerController {
 
         Self {
             speed: 64.0,
-            pressed_keys: HashSet::new(),
             sensitivity: 0.001,
             translation,
             yaw: 0.0,
@@ -53,10 +48,6 @@ impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
 
-    fn is_pressed(&self, key: Key) -> bool {
-        self.pressed_keys.contains(&key)
-    }
-
     pub fn view(&mut self) -> Mat4 {
         if self.needs_view_update {
             self.compute_view();
@@ -65,28 +56,28 @@ impl PlayerController {
         self.view
     }
 
-    pub fn fly_movement(&mut self, delta_time: Duration) {
+    pub fn fly_movement(&mut self, delta_time: Duration, keys: &HashSet<Key<SmolStr>>) {
         let view_inverse = self.view().inverse();
-        let absolute_forward = view_inverse.transform_vector3(Vec3::Z);
+        let absolute_forward = view_inverse.transform_vector3(-Vec3::Z);
         let forward = vec3(absolute_forward.x, 0.0, absolute_forward.z).normalize();
-        let right = view_inverse.transform_vector3(-Vec3::X);
+        let right = view_inverse.transform_vector3(Vec3::X);
 
-        let mut velocity = glam::Vec3::ZERO;
+        let mut velocity = Vec3::ZERO;
 
-        if self.is_pressed(FORWARD) {
+        if keys.contains(&FORWARD) {
             velocity += forward;
-        } else if self.is_pressed(BACKWARD) {
+        } else if keys.contains(&BACKWARD) {
             velocity -= forward;
         }
-        if self.is_pressed(LEFT) {
+        if keys.contains(&RIGHT) {
             velocity += right;
-        } else if self.is_pressed(RIGHT) {
+        } else if keys.contains(&LEFT) {
             velocity -= right;
         }
-        if self.is_pressed(UP) {
-            velocity -= glam::Vec3::Y;
-        } else if self.is_pressed(CONTROL) {
-            velocity += glam::Vec3::Y;
+        if keys.contains(&UP) {
+            velocity -= Vec3::Y;
+        } else if keys.contains(&CONTROL) {
+            velocity += Vec3::Y;
         }
 
         velocity = velocity.normalize_or_zero();
@@ -97,8 +88,8 @@ impl PlayerController {
     }
 
     pub fn rotate(&mut self, delta: (f64, f64)) {
-        self.yaw += (delta.0 * self.sensitivity) as f32;
-        self.pitch -= (delta.1 * self.sensitivity) as f32;
+        self.yaw -= (delta.0 * self.sensitivity) as f32;
+        self.pitch += (delta.1 * self.sensitivity) as f32;
 
         self.yaw = self.yaw.rem_euclid(TAU);
 
@@ -128,16 +119,5 @@ impl PlayerController {
         } else {
             self.speed /= 1.5;
         }
-    }
-
-    pub fn handle_keyboard_event(&mut self, key_event: KeyEvent) {
-        match key_event.state {
-            ElementState::Pressed => {
-                self.pressed_keys.insert(key_event.logical_key.clone());
-            }
-            ElementState::Released => {
-                self.pressed_keys.remove(&key_event.logical_key);
-            }
-        };
     }
 }

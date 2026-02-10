@@ -3,9 +3,11 @@ use std::{collections::HashSet, sync::Arc, time::Instant};
 use wgpu::Surface;
 use winit::{
     dpi::PhysicalSize,
-    event::{ElementState, Event, KeyEvent, StartCause, WindowEvent},
+    event::{
+        DeviceEvent, ElementState, Event, KeyEvent, MouseScrollDelta, StartCause, WindowEvent,
+    },
     event_loop::{EventLoop, EventLoopWindowTarget},
-    keyboard::{Key, NamedKey},
+    keyboard::{Key, NamedKey, SmolStr},
     window::{CursorGrabMode, Window},
 };
 
@@ -22,7 +24,7 @@ fn init_logger() {
 struct EventLoopWrapper {
     event_loop: EventLoop<()>,
     window: Arc<Window>,
-    pressed_keys: HashSet<NamedKey>,
+    pressed_keys: HashSet<Key<SmolStr>>,
     cursor_grab_mode: CursorGrabMode,
 }
 
@@ -299,60 +301,59 @@ async fn start() {
                     WindowEvent::KeyboardInput {
                         event:
                             KeyEvent {
-                                logical_key: Key::Named(named_key),
+                                logical_key,
                                 state: ElementState::Pressed,
                                 ..
                             },
                         ..
                     } => {
-                        if named_key == NamedKey::Escape
-                            && !window_loop.pressed_keys.contains(&NamedKey::Escape)
-                        {
-                            match window_loop.cursor_grab_mode {
-                                CursorGrabMode::None => {
-                                    let new_grab_mode = CursorGrabMode::Confined;
-                                    window_loop.cursor_grab_mode = new_grab_mode;
-                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
-                                    window_loop.window.set_cursor_visible(false);
-
-                                    dbg!("set confined");
-                                }
-                                _ => {
-                                    let new_grab_mode = CursorGrabMode::None;
-                                    window_loop.cursor_grab_mode = new_grab_mode;
-                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
-                                    window_loop.window.set_cursor_visible(true);
-
-                                    dbg!("set free");
+                        match logical_key {
+                            Key::Named(named_key) => {
+                                if named_key == NamedKey::Escape
+                                    && !window_loop
+                                        .pressed_keys
+                                        .contains(&Key::Named(NamedKey::Escape))
+                                {
+                                    match window_loop.cursor_grab_mode {
+                                        CursorGrabMode::None => {
+                                            let new_grab_mode = CursorGrabMode::Confined;
+                                            window_loop.cursor_grab_mode = new_grab_mode;
+                                            window_loop
+                                                .window
+                                                .set_cursor_grab(new_grab_mode)
+                                                .unwrap();
+                                            window_loop.window.set_cursor_visible(false);
+                                        }
+                                        _ => {
+                                            let new_grab_mode = CursorGrabMode::None;
+                                            window_loop.cursor_grab_mode = new_grab_mode;
+                                            window_loop
+                                                .window
+                                                .set_cursor_grab(new_grab_mode)
+                                                .unwrap();
+                                            window_loop.window.set_cursor_visible(true);
+                                        }
+                                    }
                                 }
                             }
+                            _ => {}
                         }
 
-                        window_loop.pressed_keys.insert(named_key);
+                        window_loop.pressed_keys.insert(logical_key);
                     }
                     WindowEvent::KeyboardInput {
                         event:
                             KeyEvent {
-                                logical_key: Key::Named(named_key),
+                                logical_key,
                                 state: ElementState::Released,
                                 ..
                             },
                         ..
                     } => {
-                        window_loop.pressed_keys.remove(&named_key);
+                        window_loop.pressed_keys.remove(&logical_key);
                     }
                     WindowEvent::CloseRequested => {
                         target.exit();
-                    }
-                    WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                logical_key: Key::Character(s),
-                                ..
-                            },
-                        ..
-                    } if s == "r" => {
-                        println!("{:#?}", context.instance.generate_report());
                     }
                     WindowEvent::RedrawRequested => {
                         // On MacOS, currently redraw requested comes in _before_ Init does.
@@ -371,9 +372,12 @@ async fn start() {
                             ..wgpu::TextureViewDescriptor::default()
                         });
 
-                        app.as_mut()
-                            .unwrap()
-                            .render(&view, &context.device, &context.queue);
+                        app.as_mut().unwrap().render(
+                            &view,
+                            &context.device,
+                            &context.queue,
+                            &window_loop.pressed_keys,
+                        );
 
                         window_loop.window.pre_present_notify();
                         frame.present();
@@ -382,6 +386,26 @@ async fn start() {
                     }
                     _ => app.as_mut().unwrap().update(event),
                 },
+                Event::DeviceEvent {
+                    device_id: _,
+                    event,
+                } => {
+                    if let Some(app) = app.as_mut() {
+                        match event {
+                            DeviceEvent::MouseMotion { delta } => {
+                                if window_loop.cursor_grab_mode == CursorGrabMode::Confined {
+                                    app.update_look_position(delta);
+                                }
+                            }
+                            DeviceEvent::MouseWheel { delta } => {
+                                if let MouseScrollDelta::LineDelta(_, y_delta) = delta {
+                                    app.player_controller.handle_speed_change(y_delta);
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         },

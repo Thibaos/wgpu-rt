@@ -19,7 +19,7 @@ pub const CHUNK_WIDTH: u32 = 64;
 // The amount of chunks in the world's X axis
 pub const WORLD_WIDTH: i32 = 64;
 // The amount of chunks in the world's Y axis
-pub const WORLD_HEIGHT: i32 = 64;
+pub const WORLD_HEIGHT: i32 = 16;
 // The amount of chunks in the world's Z axis
 pub const WORLD_DEPTH: i32 = 64;
 
@@ -114,6 +114,10 @@ impl Chunk {
         }
 
         self.voxels.insert(position, voxel).is_none()
+    }
+
+    pub fn vox_count(&self) -> usize {
+        self.voxels.len()
     }
 
     #[cfg(debug_assertions)]
@@ -296,6 +300,10 @@ impl Chunks {
 
     pub fn from_inner(inner: ChunksInner) -> Self {
         Self { inner }
+    }
+
+    pub fn vox_count(&self) -> usize {
+        self.inner.iter().map(|(_, c)| c.vox_count()).sum()
     }
 
     #[cfg(debug_assertions)]

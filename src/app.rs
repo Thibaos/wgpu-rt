@@ -1,21 +1,27 @@
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 use std::{borrow::Cow, iter, mem};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Vec3};
+use glam::{IVec3, Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
-use wgpu::StoreOp;
+use wgpu::{StoreOp, TlasInstance};
+use winit::event::WindowEvent;
+use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::world::Vertex;
-use crate::world::generate::random_world_gen;
-use crate::world::voxels::triangles_from_box;
+use crate::world::chunks::{self, Chunks};
+use crate::world::generate::world_from_model;
+use crate::world::voxels::{get_palette, triangles_from_box};
+use crate::world::{Vertex, voxels};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Uniforms {
     view_inverse: Mat4,
     proj_inverse: Mat4,
+    palette: [Vec4; 256],
 }
 
 pub struct App {
@@ -29,18 +35,25 @@ pub struct App {
     vertex_buf: wgpu::Buffer,
     #[expect(dead_code)]
     index_buf: wgpu::Buffer,
-    #[expect(dead_code)]
+    blas: wgpu::Blas,
     tlas: wgpu::Tlas,
+    current_tlas_window_offset: usize,
+    active_instances: Vec<wgpu::TlasInstance>,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
-    player_controller: PlayerController,
+    pub player_controller: PlayerController,
+    palette: [Vec4; 256],
+    world: Chunks,
+    last_frame_update: Instant,
+    delta_time: Duration,
 }
 
 impl App {
     pub const SRGB: bool = true;
-    pub const MAX_INSTANCE_COUNT: u32 = 2u32.pow(16) - 1;
+    pub const MAX_INSTANCE_COUNT: u32 = 2u32.pow(14) - 1;
+    pub const TLAS_WINDOW_SIZE: usize = 2usize.pow(8);
 
     pub fn required_features() -> wgpu::Features {
         wgpu::Features::TEXTURE_BINDING_ARRAY
@@ -107,6 +120,12 @@ impl App {
             ..Default::default()
         });
 
+        let voxel_data = voxels::open_file("assets/models/nuke.vox");
+        println!("file loaded");
+        let world = world_from_model(&voxel_data);
+        let palette = get_palette(&voxel_data);
+        println!("world loaded");
+
         let uniforms = {
             let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 2.5), Vec3::ZERO, Vec3::Y);
             let proj = Mat4::perspective_rh(
@@ -119,6 +138,7 @@ impl App {
             Uniforms {
                 view_inverse: view.inverse(),
                 proj_inverse: proj.inverse(),
+                palette,
             }
         };
 
@@ -165,7 +185,8 @@ impl App {
             label: None,
             flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
             update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            max_instances: Self::MAX_INSTANCE_COUNT as u32,
+            max_instances: (chunks::WORLD_WIDTH * chunks::WORLD_HEIGHT * chunks::WORLD_DEPTH)
+                as u32,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -256,14 +277,38 @@ impl App {
 
         let player_controller = PlayerController::default();
 
-        let world = random_world_gen();
-        for (i, instance) in world
-            .to_instances(0, &IVec3::ZERO, &blas, App::MAX_INSTANCE_COUNT)
-            .into_iter()
-            .enumerate()
-        {
-            tlas[i] = Some(instance);
+        for x in 0..chunks::WORLD_WIDTH {
+            for y in 0..chunks::WORLD_HEIGHT {
+                for z in 0..chunks::WORLD_DEPTH {
+                    let i = (x * chunks::WORLD_WIDTH + y * chunks::WORLD_HEIGHT + z) as usize;
+                    let transform: [f32; 12] = [
+                        chunks::CHUNK_WIDTH as f32,
+                        0.0,
+                        0.0,
+                        (chunks::WORLD_WIDTH * x) as f32,
+                        0.0,
+                        chunks::CHUNK_WIDTH as f32,
+                        0.0,
+                        (chunks::WORLD_HEIGHT * y) as f32,
+                        0.0,
+                        0.0,
+                        chunks::CHUNK_WIDTH as f32,
+                        (chunks::WORLD_DEPTH * z) as f32,
+                    ];
+
+                    tlas[i] = Some(TlasInstance::new(&blas, transform, 0, 0xff));
+                }
+            }
         }
+
+        // let world = random_world_gen();
+        // for (i, instance) in world
+        //     .to_instances(0, &IVec3::ZERO, &blas, App::MAX_INSTANCE_COUNT)
+        //     .into_iter()
+        //     .enumerate()
+        // {
+        //     tlas[i] = Some(instance);
+        // }
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -303,16 +348,42 @@ impl App {
             uniform_buf,
             vertex_buf,
             index_buf,
+            blas,
             tlas,
+            current_tlas_window_offset: 0,
+            active_instances: vec![],
             compute_pipeline,
             compute_bind_group,
             blit_pipeline,
             blit_bind_group,
+            palette,
             player_controller,
+            world,
+            last_frame_update: Instant::now(),
+            delta_time: Duration::default(),
         }
     }
 
-    pub fn update(&mut self, _event: winit::event::WindowEvent) {}
+    fn update_delta_time(&mut self) {
+        let now = Instant::now();
+        let delta = now.duration_since(self.last_frame_update);
+
+        self.last_frame_update = now;
+        self.delta_time = delta;
+    }
+
+    fn update_tlas(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.build_acceleration_structures(iter::empty(), iter::once(&self.tlas));
+    }
+
+    pub fn update(&mut self, _event: WindowEvent) {
+        self.active_instances = self.world.to_instances(
+            0,
+            &self.player_controller.translation.as_ivec3(),
+            &self.blas,
+            App::MAX_INSTANCE_COUNT,
+        );
+    }
 
     pub fn resize(
         &mut self,
@@ -322,7 +393,17 @@ impl App {
     ) {
     }
 
-    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+    pub fn render(
+        &mut self,
+        view: &wgpu::TextureView,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        keys: &HashSet<Key<SmolStr>>,
+    ) {
+        self.update_delta_time();
+
+        self.player_controller.fly_movement(self.delta_time, keys);
+
         let uniforms = {
             let view_mat = self.player_controller.view();
             let proj_mat = Mat4::perspective_rh(
@@ -335,13 +416,37 @@ impl App {
             Uniforms {
                 view_inverse: view_mat.inverse(),
                 proj_inverse: proj_mat.inverse(),
+                palette: self.palette,
             }
         };
 
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
 
+        let tlas_slice = self
+            .tlas
+            .get_mut_slice(
+                self.current_tlas_window_offset
+                    ..(self.current_tlas_window_offset + App::TLAS_WINDOW_SIZE),
+            )
+            .unwrap();
+
+        for (src, dst) in self
+            .active_instances
+            .iter()
+            .skip(self.current_tlas_window_offset)
+            .take(App::TLAS_WINDOW_SIZE)
+            .zip(tlas_slice)
+        {
+            *dst = Some(src.clone());
+        }
+
+        self.current_tlas_window_offset = (self.current_tlas_window_offset + App::TLAS_WINDOW_SIZE)
+            % (App::MAX_INSTANCE_COUNT as usize - App::TLAS_WINDOW_SIZE);
+
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        self.update_tlas(&mut encoder);
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -377,5 +482,9 @@ impl App {
         }
 
         queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn update_look_position(&mut self, delta: (f64, f64)) {
+        self.player_controller.rotate(delta);
     }
 }

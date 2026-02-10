@@ -45,6 +45,7 @@ enable wgpu_ray_query;
 struct Uniforms {
     view_inv: mat4x4<f32>,
     proj_inv: mat4x4<f32>,
+    palette: array<vec4<f32>, 256>,
 };
 
 @group(0) @binding(0)
@@ -70,12 +71,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 	let direction = (uniforms.view_inv * vec4<f32>(normalize(temp.xyz), 0.0)).xyz;
 
     var rq: ray_query;
-    rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xFFu, 0.1, 200.0, origin, direction));
+    rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0x04u, 0.1, 1000.0, origin, direction));
     rayQueryProceed(&rq);
 
     let intersection = rayQueryGetCommittedIntersection(&rq);
     if (intersection.kind != RAY_QUERY_INTERSECTION_NONE) {
-        color = vec4<f32>(intersection.barycentrics, 1.0 - intersection.barycentrics.x - intersection.barycentrics.y, 1.0);
+        color = uniforms.palette[intersection.instance_custom_data];
     }
 
     textureStore(output, global_id.xy, color);

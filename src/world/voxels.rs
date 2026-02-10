@@ -13,48 +13,36 @@ pub fn triangles_from_box(position: glam::Vec3) -> (Vec<Vertex>, Vec<u16>) {
     let glam::Vec3 { x, y, z } = position;
 
     let vertices = [
-        // left face
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
-        vertex([x - 0.5, y - 0.5, z + 0.5]),
-        vertex([x - 0.5, y + 0.5, z + 0.5]),
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
-        vertex([x - 0.5, y + 0.5, z - 0.5]),
-        vertex([x - 0.5, y + 0.5, z + 0.5]),
-        // right face
-        vertex([x + 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y - 0.5, z + 0.5]),
-        vertex([x + 0.5, y + 0.5, z + 0.5]),
-        vertex([x + 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y + 0.5, z - 0.5]),
-        vertex([x + 0.5, y + 0.5, z + 0.5]),
-        // bottom face
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y - 0.5, z + 0.5]),
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
-        vertex([x - 0.5, y - 0.5, z + 0.5]),
-        vertex([x + 0.5, y - 0.5, z + 0.5]),
-        // top face
-        vertex([x - 0.5, y + 0.5, z - 0.5]),
-        vertex([x + 0.5, y + 0.5, z - 0.5]),
-        vertex([x + 0.5, y + 0.5, z + 0.5]),
-        vertex([x - 0.5, y + 0.5, z - 0.5]),
-        vertex([x - 0.5, y + 0.5, z + 0.5]),
-        vertex([x + 0.5, y + 0.5, z + 0.5]),
-        // back face
+        // top
         vertex([x - 0.5, y - 0.5, z + 0.5]),
         vertex([x + 0.5, y - 0.5, z + 0.5]),
         vertex([x + 0.5, y + 0.5, z + 0.5]),
-        vertex([x - 0.5, y - 0.5, z + 0.5]),
         vertex([x - 0.5, y + 0.5, z + 0.5]),
-        vertex([x + 0.5, y + 0.5, z + 0.5]),
-        // front face
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y - 0.5, z - 0.5]),
-        vertex([x + 0.5, y + 0.5, z - 0.5]),
-        vertex([x - 0.5, y - 0.5, z - 0.5]),
+        // bottom
         vertex([x - 0.5, y + 0.5, z - 0.5]),
         vertex([x + 0.5, y + 0.5, z - 0.5]),
+        vertex([x + 0.5, y - 0.5, z - 0.5]),
+        vertex([x - 0.5, y - 0.5, z - 0.5]),
+        // right
+        vertex([x + 0.5, y - 0.5, z - 0.5]),
+        vertex([x + 0.5, y + 0.5, z - 0.5]),
+        vertex([x + 0.5, y + 0.5, z + 0.5]),
+        vertex([x + 0.5, y - 0.5, z + 0.5]),
+        // left
+        vertex([x - 0.5, y - 0.5, z + 0.5]),
+        vertex([x - 0.5, y + 0.5, z + 0.5]),
+        vertex([x - 0.5, y + 0.5, z - 0.5]),
+        vertex([x - 0.5, y - 0.5, z - 0.5]),
+        // front
+        vertex([x + 0.5, y + 0.5, z - 0.5]),
+        vertex([x - 0.5, y + 0.5, z - 0.5]),
+        vertex([x - 0.5, y + 0.5, z + 0.5]),
+        vertex([x + 0.5, y + 0.5, z + 0.5]),
+        // back
+        vertex([x + 0.5, y - 0.5, z + 0.5]),
+        vertex([x - 0.5, y - 0.5, z + 0.5]),
+        vertex([x - 0.5, y - 0.5, z - 0.5]),
+        vertex([x + 0.5, y - 0.5, z - 0.5]),
     ];
 
     let indices: &[u16] = &[

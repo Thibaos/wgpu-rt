@@ -1,24 +1,3 @@
-use std::io::Write;
-use std::time::Instant;
-
-pub fn output_image_native(image_data: Vec<u8>, texture_dims: (usize, usize), path: String) {
-    let mut png_data = Vec::<u8>::with_capacity(image_data.len());
-    let mut encoder = png::Encoder::new(
-        std::io::Cursor::new(&mut png_data),
-        texture_dims.0 as u32,
-        texture_dims.1 as u32,
-    );
-    encoder.set_color(png::ColorType::Rgba);
-    let mut png_writer = encoder.write_header().unwrap();
-    png_writer.write_image_data(&image_data[..]).unwrap();
-    png_writer.finish().unwrap();
-    log::info!("PNG file encoded in memory.");
-
-    let mut file = std::fs::File::create(&path).unwrap();
-    file.write_all(&png_data[..]).unwrap();
-    log::info!("PNG file written to disc as \"{path}\".");
-}
-
 /// If the environment variable `WGPU_ADAPTER_NAME` is set, this function will attempt to
 /// initialize the adapter with that name. If it is not set, it will attempt to initialize
 /// the adapter which supports the required features.
@@ -80,22 +59,5 @@ pub(crate) async fn get_adapter_with_capabilities_or_from_env(
         }
 
         chosen_adapter.expect("No suitable GPU adapters found on the system!")
-    }
-}
-
-#[derive(Default)]
-pub struct AnimationTimer {
-    start_time: Option<Instant>,
-}
-
-impl AnimationTimer {
-    pub fn time(&mut self) -> f32 {
-        match self.start_time {
-            None => {
-                self.start_time = Some(Instant::now());
-                0.0
-            }
-            Some(ref instant) => instant.elapsed().as_secs_f32(),
-        }
     }
 }

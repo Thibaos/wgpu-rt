@@ -1,3 +1,4 @@
+#![allow(unused)]
 use dot_vox::DotVoxData;
 use glam::{IVec3, UVec3, Vec4, Vec4Swizzles, ivec3};
 use rand::Rng;
@@ -42,8 +43,13 @@ pub fn world_from_model(voxel_data: &DotVoxData) -> Chunks {
 
     loader.traverse();
 
-    for (translation, rotation, size, voxels) in loader.models {
-        let transform = SceneGraphTraverser::to_transform(translation, rotation, size);
+    println!("traverse done");
+
+    let model_count = loader.models.len();
+
+    for (i, (translation, rotation, size, voxels)) in loader.models.iter().enumerate() {
+        println!("model {}/{}", i, model_count);
+        let transform = SceneGraphTraverser::to_transform(*translation, *rotation, *size);
 
         for voxel in voxels {
             let local_position =
@@ -59,7 +65,7 @@ pub fn world_from_model(voxel_data: &DotVoxData) -> Chunks {
             .xyz()
             .as_ivec3();
 
-            let p = IVec3::new(position.x, -position.y, -position.z);
+            let p = IVec3::new(position.x, -position.y, position.z);
 
             Chunks::insert_voxel(
                 &mut chunks,
@@ -71,6 +77,8 @@ pub fn world_from_model(voxel_data: &DotVoxData) -> Chunks {
             );
         }
     }
+
+    dbg!(chunks.vox_count());
 
     chunks
 }
