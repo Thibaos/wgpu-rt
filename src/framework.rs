@@ -280,7 +280,6 @@ async fn start() {
                             surface.config(),
                             &context.adapter,
                             &context.device,
-                            &context.queue,
                         ));
                     }
                 }

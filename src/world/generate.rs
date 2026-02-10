@@ -8,12 +8,12 @@ use crate::{
     world::{HostVoxel, chunks::Chunks, loader::SceneGraphTraverser},
 };
 
-pub fn random_world_gen() -> Chunks {
+pub fn random_world_gen(n: usize) -> Chunks {
     let mut chunks = Chunks::empty();
 
     let mut rng = rand::rng();
 
-    for _ in 0..App::MAX_INSTANCE_COUNT {
+    for _ in 0..n {
         let position = ivec3(
             rng.random_range(0..64),
             rng.random_range(0..64),

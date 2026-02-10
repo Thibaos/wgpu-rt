@@ -9,6 +9,7 @@ pub fn open_file(path: &str) -> dot_vox::DotVoxData {
     vox_data
 }
 
+#[allow(unused)]
 pub fn triangles_from_box(position: glam::Vec3) -> (Vec<Vertex>, Vec<u16>) {
     let glam::Vec3 { x, y, z } = position;
 

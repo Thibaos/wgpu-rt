@@ -1,20 +1,18 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
-use std::{borrow::Cow, iter, mem};
 
 use bytemuck::{Pod, Zeroable};
-use glam::{IVec3, Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
-use wgpu::{StoreOp, TlasInstance};
+use wgpu::StoreOp;
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::world::chunks::{self, Chunks};
-use crate::world::generate::world_from_model;
-use crate::world::voxels::{get_palette, triangles_from_box};
-use crate::world::{Vertex, voxels};
+use crate::world::voxels;
+use crate::world::voxels::get_palette;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -25,40 +23,28 @@ struct Uniforms {
 }
 
 pub struct App {
-    rt_target: wgpu::Texture,
+    compute_target: wgpu::Texture,
     #[expect(dead_code)]
-    rt_view: wgpu::TextureView,
+    compute_view: wgpu::TextureView,
     #[expect(dead_code)]
     sampler: wgpu::Sampler,
     uniform_buf: wgpu::Buffer,
-    #[expect(dead_code)]
-    vertex_buf: wgpu::Buffer,
-    #[expect(dead_code)]
-    index_buf: wgpu::Buffer,
-    blas: wgpu::Blas,
-    tlas: wgpu::Tlas,
-    current_tlas_window_offset: usize,
-    active_instances: Vec<wgpu::TlasInstance>,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
     blit_pipeline: wgpu::RenderPipeline,
     blit_bind_group: wgpu::BindGroup,
     pub player_controller: PlayerController,
     palette: [Vec4; 256],
-    world: Chunks,
+    // world: Chunks,
     last_frame_update: Instant,
     delta_time: Duration,
 }
 
 impl App {
     pub const SRGB: bool = true;
-    pub const MAX_INSTANCE_COUNT: u32 = 2u32.pow(14) - 1;
-    pub const TLAS_WINDOW_SIZE: usize = 2usize.pow(8);
 
     pub fn required_features() -> wgpu::Features {
-        wgpu::Features::TEXTURE_BINDING_ARRAY
-            | wgpu::Features::VERTEX_WRITABLE_STORAGE
-            | wgpu::Features::EXPERIMENTAL_RAY_QUERY
+        wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::VERTEX_WRITABLE_STORAGE
     }
 
     pub fn optional_features() -> wgpu::Features {
@@ -80,9 +66,8 @@ impl App {
         config: &wgpu::SurfaceConfiguration,
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
     ) -> Self {
-        let rt_target = device.create_texture(&wgpu::TextureDescriptor {
+        let compute_target = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("rt_target"),
             size: wgpu::Extent3d {
                 width: config.width,
@@ -97,7 +82,7 @@ impl App {
             view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
         });
 
-        let rt_view = rt_target.create_view(&wgpu::TextureViewDescriptor {
+        let compute_view = compute_target.create_view(&wgpu::TextureViewDescriptor {
             label: None,
             format: Some(wgpu::TextureFormat::Rgba8Unorm),
             dimension: Some(wgpu::TextureViewDimension::D2),
@@ -121,10 +106,8 @@ impl App {
         });
 
         let voxel_data = voxels::open_file("assets/models/nuke.vox");
-        println!("file loaded");
-        let world = world_from_model(&voxel_data);
+        // let world = world_from_model(&voxel_data);
         let palette = get_palette(&voxel_data);
-        println!("world loaded");
 
         let uniforms = {
             let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 2.5), Vec3::ZERO, Vec3::Y);
@@ -142,57 +125,24 @@ impl App {
             }
         };
 
+        let brickmap = [0];
+
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let (vertex_data, index_data) = triangles_from_box(Vec3::ZERO);
-
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(&vertex_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::BLAS_INPUT,
-        });
-
-        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&index_data),
-            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::BLAS_INPUT,
-        });
-
-        let blas_geo_size_desc = wgpu::BlasTriangleGeometrySizeDescriptor {
-            vertex_format: wgpu::VertexFormat::Float32x3,
-            vertex_count: vertex_data.len() as u32,
-            index_format: Some(wgpu::IndexFormat::Uint16),
-            index_count: Some(index_data.len() as u32),
-            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-        };
-
-        let blas = device.create_blas(
-            &wgpu::CreateBlasDescriptor {
-                label: None,
-                flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            },
-            wgpu::BlasGeometrySizeDescriptors::Triangles {
-                descriptors: vec![blas_geo_size_desc.clone()],
-            },
-        );
-
-        let mut tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
-            label: None,
-            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-            max_instances: (chunks::WORLD_WIDTH * chunks::WORLD_HEIGHT * chunks::WORLD_DEPTH)
-                as u32,
+        let storage_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Storage Buffer"),
+            contents: &brickmap,
+            usage: wgpu::BufferUsages::STORAGE,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rt_computer"),
+            label: Some("compute_tree64"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/ray_cube_compute.wgsl"
+                "../assets/shaders/compute_tree64.wgsl"
             ))),
         });
 
@@ -204,7 +154,7 @@ impl App {
         });
 
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("rt"),
+            label: Some("compute"),
             layout: None,
             module: &shader,
             entry_point: Some("main"),
@@ -220,7 +170,7 @@ impl App {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
+                    resource: wgpu::BindingResource::TextureView(&compute_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -228,7 +178,7 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::AccelerationStructure(&tlas),
+                    resource: storage_buf.as_entire_binding(),
                 },
             ],
         });
@@ -266,7 +216,7 @@ impl App {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
+                    resource: wgpu::BindingResource::TextureView(&compute_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -277,88 +227,40 @@ impl App {
 
         let player_controller = PlayerController::default();
 
-        for x in 0..chunks::WORLD_WIDTH {
-            for y in 0..chunks::WORLD_HEIGHT {
-                for z in 0..chunks::WORLD_DEPTH {
-                    let i = (x * chunks::WORLD_WIDTH + y * chunks::WORLD_HEIGHT + z) as usize;
-                    let transform: [f32; 12] = [
-                        chunks::CHUNK_WIDTH as f32,
-                        0.0,
-                        0.0,
-                        (chunks::WORLD_WIDTH * x) as f32,
-                        0.0,
-                        chunks::CHUNK_WIDTH as f32,
-                        0.0,
-                        (chunks::WORLD_HEIGHT * y) as f32,
-                        0.0,
-                        0.0,
-                        chunks::CHUNK_WIDTH as f32,
-                        (chunks::WORLD_DEPTH * z) as f32,
-                    ];
-
-                    tlas[i] = Some(TlasInstance::new(&blas, transform, 0, 0xff));
-                }
-            }
-        }
-
-        // let world = random_world_gen();
-        // for (i, instance) in world
-        //     .to_instances(0, &IVec3::ZERO, &blas, App::MAX_INSTANCE_COUNT)
-        //     .into_iter()
-        //     .enumerate()
-        // {
-        //     tlas[i] = Some(instance);
+        // for x in 0..chunks::WORLD_WIDTH {
+        //     for y in 0..chunks::WORLD_HEIGHT {
+        //         for z in 0..chunks::WORLD_DEPTH {
+        //             let i = (x * chunks::WORLD_WIDTH + y * chunks::WORLD_HEIGHT + z) as usize;
+        //             let transform: [f32; 12] = [
+        //                 chunks::CHUNK_WIDTH as f32,
+        //                 0.0,
+        //                 0.0,
+        //                 (chunks::WORLD_WIDTH * x) as f32,
+        //                 0.0,
+        //                 chunks::CHUNK_WIDTH as f32,
+        //                 0.0,
+        //                 (chunks::WORLD_HEIGHT * y) as f32,
+        //                 0.0,
+        //                 0.0,
+        //                 chunks::CHUNK_WIDTH as f32,
+        //                 (chunks::WORLD_DEPTH * z) as f32,
+        //             ];
+        //         }
+        //     }
         // }
 
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        encoder.build_acceleration_structures(
-            iter::once(&wgpu::BlasBuildEntry {
-                blas: &blas,
-                geometry: wgpu::BlasGeometries::TriangleGeometries(vec![
-                    wgpu::BlasTriangleGeometry {
-                        size: &blas_geo_size_desc,
-                        vertex_buffer: &vertex_buf,
-                        first_vertex: 0,
-                        vertex_stride: mem::size_of::<Vertex>() as u64,
-                        index_buffer: Some(&index_buf),
-                        first_index: Some(0),
-                        transform_buffer: None,
-                        transform_buffer_offset: None,
-                    },
-                ]),
-            }),
-            iter::once(&tlas),
-        );
-
-        queue.submit(Some(encoder.finish()));
-
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        encoder.build_acceleration_structures(iter::empty(), iter::once(&tlas));
-
-        queue.submit(Some(encoder.finish()));
-
         App {
-            rt_target,
-            rt_view,
+            compute_target,
+            compute_view,
             sampler,
             uniform_buf,
-            vertex_buf,
-            index_buf,
-            blas,
-            tlas,
-            current_tlas_window_offset: 0,
-            active_instances: vec![],
             compute_pipeline,
             compute_bind_group,
             blit_pipeline,
             blit_bind_group,
             palette,
             player_controller,
-            world,
+            // world,
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
         }
@@ -372,18 +274,7 @@ impl App {
         self.delta_time = delta;
     }
 
-    fn update_tlas(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        encoder.build_acceleration_structures(iter::empty(), iter::once(&self.tlas));
-    }
-
-    pub fn update(&mut self, _event: WindowEvent) {
-        self.active_instances = self.world.to_instances(
-            0,
-            &self.player_controller.translation.as_ivec3(),
-            &self.blas,
-            App::MAX_INSTANCE_COUNT,
-        );
-    }
+    pub fn update(&mut self, _event: WindowEvent) {}
 
     pub fn resize(
         &mut self,
@@ -422,31 +313,8 @@ impl App {
 
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(&[uniforms]));
 
-        let tlas_slice = self
-            .tlas
-            .get_mut_slice(
-                self.current_tlas_window_offset
-                    ..(self.current_tlas_window_offset + App::TLAS_WINDOW_SIZE),
-            )
-            .unwrap();
-
-        for (src, dst) in self
-            .active_instances
-            .iter()
-            .skip(self.current_tlas_window_offset)
-            .take(App::TLAS_WINDOW_SIZE)
-            .zip(tlas_slice)
-        {
-            *dst = Some(src.clone());
-        }
-
-        self.current_tlas_window_offset = (self.current_tlas_window_offset + App::TLAS_WINDOW_SIZE)
-            % (App::MAX_INSTANCE_COUNT as usize - App::TLAS_WINDOW_SIZE);
-
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        self.update_tlas(&mut encoder);
 
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -455,7 +323,11 @@ impl App {
             });
             cpass.set_pipeline(&self.compute_pipeline);
             cpass.set_bind_group(0, Some(&self.compute_bind_group), &[]);
-            cpass.dispatch_workgroups(self.rt_target.width() / 8, self.rt_target.height() / 8, 1);
+            cpass.dispatch_workgroups(
+                self.compute_target.width() / 8,
+                self.compute_target.height() / 8,
+                1,
+            );
         }
 
         {
