@@ -1,6 +1,6 @@
 use std::{collections::HashSet, sync::Arc, time::Instant};
 
-use wgpu::{Surface, TextureFormat};
+use wgpu::Surface;
 use winit::{
     dpi::PhysicalSize,
     event::{
