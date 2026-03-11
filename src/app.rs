@@ -8,9 +8,7 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
-use wgpu::{
-    Extent3d, Sampler, StoreOp, TextureDescriptor, TextureFormat, TextureUsages, TextureView,
-};
+use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages, TextureView};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
@@ -31,6 +29,7 @@ pub struct App {
     index_count: usize,
     pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    nodes_bind_group: wgpu::BindGroup,
     camera_bind_group: wgpu::BindGroup,
     blit_view_bind_group: wgpu::BindGroup,
     pub player_controller: PlayerController,
@@ -50,6 +49,7 @@ struct AABB {
     // 2x2x2 occupancy bitmap of the child nodes of an octree (only 8 of 32 bits used)
     // NOTE 4x4x4 fits perfectly in vec2<u32> and is likely better performance overall
     octants: u32,
+    _pad: [f32; 3],
 }
 
 #[repr(C)]
@@ -112,13 +112,11 @@ fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
     (vertex_data.to_vec(), index_data.to_vec())
 }
 
+const CAMERA_POS: glam::Vec3 = glam::Vec3::new(1.5f32, -5.0, 3.0);
+
 fn generate_matrix(aspect_ratio: f32) -> glam::Mat4 {
     let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
-    let view = glam::Mat4::look_at_rh(
-        glam::Vec3::new(1.5f32, -5.0, 3.0),
-        glam::Vec3::ZERO,
-        glam::Vec3::Z,
-    );
+    let view = glam::Mat4::look_at_rh(CAMERA_POS, glam::Vec3::ZERO, glam::Vec3::Z);
     projection * view
 }
 
@@ -198,22 +196,34 @@ impl App {
         let vertex_buffers = [wgpu::VertexBufferLayout {
             array_stride: vertex_size as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 4 * 4,
-                    shader_location: 1,
-                },
-            ],
+            attributes: &[wgpu::VertexAttribute {
+                format: wgpu::VertexFormat::Float32x4,
+                offset: 0,
+                shader_location: 0,
+            }],
         }];
+
+        let nodes = [AABB {
+            aabb_min: Vec3::ZERO,
+            octants: u32::MAX,
+            scale: 1.0,
+            _pad: [0.0; 3],
+        }];
+
+        let nodes_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&nodes),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        });
 
         let mx_total = generate_matrix(config.width as f32 / config.height as f32);
         let mx_ref = mx_total.as_ref();
+
+        let camera_pos_buffer = device.create_buffer_init(&BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::bytes_of(&CAMERA_POS),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
 
         let camera_view_proj_buffer = device.create_buffer_init(&BufferInitDescriptor {
             label: None,
@@ -235,33 +245,75 @@ impl App {
             ))),
         });
 
-        let camera_bind_group_layout =
+        let nodes_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
+                label: Some("nodes"),
                 entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 1,
+                    binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
                     ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(64),
+                        min_binding_size: wgpu::BufferSize::new(32),
                     },
                     count: None,
                 }],
             });
 
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera"),
-            layout: &camera_bind_group_layout,
+        let nodes_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("nodes"),
+            layout: &nodes_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
-                binding: 1,
-                resource: camera_view_proj_buffer.as_entire_binding(),
+                binding: 0,
+                resource: nodes_buffer.as_entire_binding(),
             }],
         });
 
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("camera"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(12),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(64),
+                        },
+                        count: None,
+                    },
+                ],
+            });
+
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera"),
+            layout: &camera_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_pos_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: camera_view_proj_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&camera_bind_group_layout],
+            label: Some("vertex"),
+            bind_group_layouts: &[&nodes_bind_group_layout, &camera_bind_group_layout],
             immediate_size: 0,
         });
 
@@ -334,8 +386,8 @@ impl App {
             index_count: index_data.len(),
             pipeline,
             blit_pipeline,
+            nodes_bind_group,
             camera_bind_group,
-            // storage_bind_group,
             blit_view_bind_group,
             player_controller,
             last_frame_update: Instant::now(),
@@ -396,7 +448,8 @@ impl App {
             rpass.push_debug_group("Prepare data for draw");
 
             rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, Some(&self.camera_bind_group), &[]);
+            rpass.set_bind_group(0, Some(&self.nodes_bind_group), &[]);
+            rpass.set_bind_group(1, Some(&self.camera_bind_group), &[]);
 
             rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
             rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
