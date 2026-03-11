@@ -139,6 +139,7 @@ const VERY_SMALL: f32 = 1e-6;
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) u32 {
     return 1;
+    // return vec4<f32>(1.0);
 
     // let pos = camera_pos;
     // let dir = normalize(in.world_pos - pos);
