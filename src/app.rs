@@ -26,22 +26,14 @@ struct Uniforms {
 
 pub struct App {
     rt_view: TextureView,
-    // rt_sampler: Sampler,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     index_count: usize,
-    // camera_position_buffer: wgpu::Buffer,
-    // camera_view_proj_buffer: wgpu::Buffer,
-    // camera_view_buffer: wgpu::Buffer,
-    // camera_proj_buffer: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
-    // storage_bind_group: wgpu::BindGroup,
     camera_bind_group: wgpu::BindGroup,
     blit_view_bind_group: wgpu::BindGroup,
-    // blit_camera_bind_group: wgpu::BindGroup,
     pub player_controller: PlayerController,
-    // palette: [Vec4; 256],
     last_frame_update: Instant,
     delta_time: Duration,
 }
@@ -157,11 +149,7 @@ impl App {
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
     ) -> Self {
-        // let voxel_data = voxels::open_file("assets/models/nuke.vox");
-        // let world = world_from_model(&voxel_data);
-        // let palette = get_palette(&voxel_data);
-
-        let format = TextureFormat::R32Uint;
+        const FORMAT: TextureFormat = TextureFormat::R32Uint;
 
         let render_target = device.create_texture(&TextureDescriptor {
             label: Some("Vertex target"),
@@ -173,16 +161,16 @@ impl App {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format,
+            format: FORMAT,
             usage: TextureUsages::RENDER_ATTACHMENT
                 | TextureUsages::TEXTURE_BINDING
                 | TextureUsages::STORAGE_BINDING,
-            view_formats: &[format],
+            view_formats: &[FORMAT],
         });
 
         let rt_view = render_target.create_view(&wgpu::TextureViewDescriptor {
             label: Some("rt_view"),
-            format: Some(format),
+            format: Some(FORMAT),
             dimension: Some(wgpu::TextureViewDimension::D2),
             usage: Some(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING),
             aspect: wgpu::TextureAspect::All,
@@ -191,17 +179,6 @@ impl App {
             base_array_layer: 0,
             array_layer_count: None,
         });
-
-        // let rt_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        //     label: Some("rt_sampler"),
-        //     address_mode_u: wgpu::AddressMode::ClampToEdge,
-        //     address_mode_v: wgpu::AddressMode::ClampToEdge,
-        //     address_mode_w: wgpu::AddressMode::ClampToEdge,
-        //     mag_filter: wgpu::FilterMode::Linear,
-        //     min_filter: wgpu::FilterMode::Linear,
-        //     mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-        //     ..Default::default()
-        // });
 
         let vertex_size = size_of::<Vertex>();
         let (vertex_data, index_data) = create_vertices();
@@ -235,42 +212,6 @@ impl App {
             ],
         }];
 
-        // let camera_position = Vec3::new(0.0, 0.0, 2.5);
-
-        // let view_inv = Mat4::look_at_rh(camera_position, Vec3::ZERO, Vec3::Y).inverse();
-        // let proj_inv = Mat4::perspective_rh(
-        //     consts::FRAC_PI_4,
-        //     config.width as f32 / config.height as f32,
-        //     0.001,
-        //     1000.0,
-        // )
-        // .inverse();
-
-        // let contents = &[
-        //     AABB {
-        //         aabb_min: Vec3::ZERO,
-        //         scale: 128.0,
-        //         octants: u32::MAX,
-        //     },
-        //     AABB {
-        //         aabb_min: Vec3::splat(128.0),
-        //         scale: 128.0,
-        //         octants: 2u32.pow(8),
-        //     },
-        // ];
-
-        // let storage_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        //     label: None,
-        //     contents: bytemuck::cast_slice(contents),
-        //     usage: wgpu::BufferUsages::STORAGE,
-        // });
-
-        // let camera_position_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        //     label: None,
-        //     contents: bytemuck::cast_slice(&[camera_position]),
-        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        // });
-
         let mx_total = generate_matrix(config.width as f32 / config.height as f32);
         let mx_ref = mx_total.as_ref();
 
@@ -279,18 +220,6 @@ impl App {
             contents: bytemuck::cast_slice(mx_ref),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-
-        // let camera_view_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        //     label: None,
-        //     contents: bytemuck::cast_slice(&[(view_inv)]),
-        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        // });
-
-        // let camera_proj_buffer = device.create_buffer_init(&BufferInitDescriptor {
-        //     label: None,
-        //     contents: bytemuck::cast_slice(&[(proj_inv)]),
-        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        // });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
@@ -324,16 +253,10 @@ impl App {
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera"),
             layout: &camera_bind_group_layout,
-            entries: &[
-                // wgpu::BindGroupEntry {
-                //     binding: 0,
-                //     resource: camera_position_buffer.as_entire_binding(),
-                // },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: camera_view_proj_buffer.as_entire_binding(),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 1,
+                resource: camera_view_proj_buffer.as_entire_binding(),
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -355,7 +278,7 @@ impl App {
                 module: &shader,
                 entry_point: Some("fragment"),
                 compilation_options: Default::default(),
-                targets: &[Some(format.into())],
+                targets: &[Some(FORMAT.into())],
             }),
             primitive: wgpu::PrimitiveState {
                 cull_mode: Some(wgpu::Face::Back),
@@ -392,70 +315,28 @@ impl App {
             cache: None,
         });
 
-        // let storage_bind_group_layout = pipeline.get_bind_group_layout(0);
-        // let storage_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //     label: Some("storage"),
-        //     layout: &storage_bind_group_layout,
-        //     entries: &[wgpu::BindGroupEntry {
-        //         binding: 0,
-        //         resource: storage_buffer.as_entire_binding(),
-        //     }],
-        // });
-
         let blit_view_bind_group_layout = blit_pipeline.get_bind_group_layout(0);
         let blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("view"),
             layout: &blit_view_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
-                },
-                // wgpu::BindGroupEntry {
-                //     binding: 1,
-                //     resource: wgpu::BindingResource::Sampler(&rt_sampler),
-                // },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&rt_view),
+            }],
         });
-
-        // let blit_camera_bind_group_layout = blit_pipeline.get_bind_group_layout(1);
-        // let blit_camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //     label: Some("camera"),
-        //     layout: &blit_camera_bind_group_layout,
-        //     entries: &[
-        //         wgpu::BindGroupEntry {
-        //             binding: 0,
-        //             resource: camera_position_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 1,
-        //             resource: camera_view_buffer.as_entire_binding(),
-        //         },
-        //         wgpu::BindGroupEntry {
-        //             binding: 2,
-        //             resource: camera_proj_buffer.as_entire_binding(),
-        //         },
-        //     ],
-        // });
 
         let player_controller = PlayerController::default();
 
         App {
             rt_view,
-            // rt_sampler,
             vertex_buf,
             index_buf,
             index_count: index_data.len(),
-            // camera_position_buffer,
-            // camera_view_proj_buffer,
-            // camera_view_buffer,
-            // camera_proj_buffer,
             pipeline,
             blit_pipeline,
             camera_bind_group,
             // storage_bind_group,
             blit_view_bind_group,
-            // blit_camera_bind_group,
             player_controller,
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
@@ -491,38 +372,6 @@ impl App {
 
         self.player_controller.fly_movement(self.delta_time, keys);
 
-        // queue.write_buffer(
-        //     &self.camera_position_buffer,
-        //     0,
-        //     bytemuck::cast_slice(&[self.player_controller.translation]),
-        // );
-
-        // let view_mat = self.player_controller.view();
-        // let proj_mat = Mat4::perspective_rh(
-        //     consts::FRAC_PI_4,
-        //     view.texture().width() as f32 / view.texture().height() as f32,
-        //     0.001,
-        //     1000.0,
-        // );
-
-        // queue.write_buffer(
-        //     &self.camera_view_proj_buffer,
-        //     0,
-        //     bytemuck::cast_slice(&[view_mat * proj_mat]),
-        // );
-
-        // queue.write_buffer(
-        //     &self.camera_view_buffer,
-        //     0,
-        //     bytemuck::cast_slice(&[view_mat.inverse()]),
-        // );
-
-        // queue.write_buffer(
-        //     &self.camera_proj_buffer,
-        //     0,
-        //     bytemuck::cast_slice(&[proj_mat.inverse()]),
-        // );
-
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -547,7 +396,6 @@ impl App {
             rpass.push_debug_group("Prepare data for draw");
 
             rpass.set_pipeline(&self.pipeline);
-            // rpass.set_bind_group(0, Some(&self.storage_bind_group), &[]);
             rpass.set_bind_group(0, Some(&self.camera_bind_group), &[]);
 
             rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
@@ -579,7 +427,6 @@ impl App {
 
             rpass.set_pipeline(&self.blit_pipeline);
             rpass.set_bind_group(0, Some(&self.blit_view_bind_group), &[]);
-            // rpass.set_bind_group(1, Some(&self.blit_camera_bind_group), &[]);
             rpass.draw(0..3, 0..1);
         }
 
