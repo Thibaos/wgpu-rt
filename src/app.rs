@@ -204,9 +204,9 @@ impl App {
         }];
 
         let nodes = [AABB {
-            aabb_min: Vec3::ZERO,
+            aabb_min: Vec3::NEG_ONE,
             octants: u32::MAX,
-            scale: 1.0,
+            scale: 2.0,
             _pad: [0.0; 3],
         }];
 
@@ -241,7 +241,7 @@ impl App {
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: None,
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/blit2.wgsl"
+                "../assets/shaders/blit.wgsl"
             ))),
         });
 
@@ -333,7 +333,7 @@ impl App {
                 targets: &[Some(FORMAT.into())],
             }),
             primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 ..Default::default()
             },
             depth_stencil: None,

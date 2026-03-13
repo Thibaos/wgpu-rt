@@ -112,8 +112,8 @@ fn vertex(
     out.octant_scale = octant_scale;
     out.octants = octants;
     let corner = tight_min + corner_pos * tight_size;
-    // out.clip_pos = camera_view_proj * vec4<f32>(corner, 1.0);
-    out.clip_pos = transform * position;
+    out.clip_pos = transform * vec4<f32>(corner, 1.0);
+    // out.clip_pos = transform * position;
     out.world_pos = corner;
     return out;
 }
@@ -133,7 +133,7 @@ const VERY_SMALL: f32 = 1e-6;
 
 @fragment
 fn fragment(in: Params) -> @location(0) u32 {
-    return 1;
+    return u32(in.clip_pos.x);
 
     // let pos = camera_pos;
     // let dir = normalize(in.world_pos - pos);
