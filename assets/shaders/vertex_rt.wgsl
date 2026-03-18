@@ -133,7 +133,19 @@ const VERY_SMALL: f32 = 1e-6;
 
 @fragment
 fn fragment(in: Params) -> @location(0) u32 {
-    return u32(in.clip_pos.x);
+    if in.world_pos.x > in.world_pos.y && in.world_pos.x > in.world_pos.z {
+        return 1;
+    }
+
+    if in.world_pos.y > in.world_pos.x && in.world_pos.y > in.world_pos.z {
+        return 2;
+    }
+
+    if in.world_pos.z > in.world_pos.x && in.world_pos.z > in.world_pos.y {
+        return 3;
+    }
+
+    return 0;
 
     // let pos = camera_pos;
     // let dir = normalize(in.world_pos - pos);

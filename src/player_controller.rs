@@ -1,7 +1,7 @@
 use core::f32;
 use std::{
     collections::HashSet,
-    f32::consts::{FRAC_PI_2, TAU},
+    f32::consts::{self, FRAC_PI_2, TAU},
     time::Duration,
 };
 
@@ -24,6 +24,7 @@ pub struct PlayerController {
     yaw: f32,
     pitch: f32,
 
+    proj: Mat4,
     view: Mat4,
     needs_view_update: bool,
 }
@@ -38,6 +39,7 @@ impl Default for PlayerController {
             translation,
             yaw: 0.0,
             pitch: 0.0,
+            proj: glam::Mat4::perspective_rh(consts::FRAC_PI_4, 16. / 9., 1.0, 100.0),
             view: Mat4::IDENTITY,
             needs_view_update: true,
         }
@@ -47,6 +49,14 @@ impl Default for PlayerController {
 impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
+
+    pub fn view_proj(&mut self) -> Mat4 {
+        if self.needs_view_update {
+            self.compute_view();
+        }
+
+        self.proj * self.view
+    }
 
     pub fn view(&mut self) -> Mat4 {
         if self.needs_view_update {
@@ -110,7 +120,7 @@ impl PlayerController {
         let forward = rot * Vec3::new(0.0, 0.0, -1.0);
         let up = rot * Vec3::new(0.0, 1.0, 0.0);
 
-        self.view = Mat4::look_at_rh(self.translation, self.translation + forward, up);
+        self.view = Mat4::look_at_rh(self.translation, glam::Vec3::ZERO, glam::Vec3::Z);
     }
 
     pub fn handle_speed_change(&mut self, y_delta: f32) {

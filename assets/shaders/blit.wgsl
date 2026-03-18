@@ -47,6 +47,11 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> VertexOutput {
 // @group(1) @binding(1) var<uniform> view_inv: mat4x4<f32>;
 // @group(1) @binding(2) var<uniform> proj_inv: mat4x4<f32>;
 
+const BLACK: vec4<f32> = vec4<f32>(0.0);
+const RED: vec4<f32> = vec4<f32>(1.0, 0.0, 0.0, 1.0);
+const GREEN: vec4<f32> = vec4<f32>(0.0, 1.0, 0.0, 1.0);
+const BLUE: vec4<f32> = vec4<f32>(0.0, 0.0, 1.0, 1.0);
+
 @fragment
 fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     // let x = vertex.tex_coords.x;
@@ -66,10 +71,17 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
     // let render_color = textureSample(r_color, r_sampler, vertex.tex_coords);
     let render_color = textureLoad(r_color, vec2<u32>(vertex.tex_coords * vec2<f32>(1920.0, 1080.0)), 0).r;
 
-    if render_color > 0 {
-        let r = f32(render_color);
-        return vec4<f32>((r - 620.) /600., 0.0, 0.0, 1.0);
+    if render_color == 1 {
+        return RED;
     }
 
-    return vec4<f32>(0.0);
+    if render_color == 2 {
+        return GREEN;
+    }
+
+    if render_color == 3 {
+        return BLUE;
+    }
+
+    return BLACK;
 }

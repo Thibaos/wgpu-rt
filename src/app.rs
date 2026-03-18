@@ -26,6 +26,8 @@ pub struct App {
     rt_view: TextureView,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
+    camera_pos_buffer: wgpu::Buffer,
+    camera_view_proj_buffer: wgpu::Buffer,
     index_count: usize,
     pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
@@ -56,57 +58,30 @@ struct AABB {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     _pos: [f32; 4],
-    _tex_coord: [f32; 2],
 }
 
-fn vertex(pos: [i8; 3], tc: [i8; 2]) -> Vertex {
+fn vertex(pos: [i8; 3]) -> Vertex {
     Vertex {
         _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
-        _tex_coord: [tc[0] as f32, tc[1] as f32],
     }
 }
 
 fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
     let vertex_data = [
-        // top (0, 0, 1)
-        vertex([-1, -1, 1], [0, 0]),
-        vertex([1, -1, 1], [1, 0]),
-        vertex([1, 1, 1], [1, 1]),
-        vertex([-1, 1, 1], [0, 1]),
-        // bottom (0, 0, -1)
-        vertex([-1, 1, -1], [1, 0]),
-        vertex([1, 1, -1], [0, 0]),
-        vertex([1, -1, -1], [0, 1]),
-        vertex([-1, -1, -1], [1, 1]),
-        // right (1, 0, 0)
-        vertex([1, -1, -1], [0, 0]),
-        vertex([1, 1, -1], [1, 0]),
-        vertex([1, 1, 1], [1, 1]),
-        vertex([1, -1, 1], [0, 1]),
-        // left (-1, 0, 0)
-        vertex([-1, -1, 1], [1, 0]),
-        vertex([-1, 1, 1], [0, 0]),
-        vertex([-1, 1, -1], [0, 1]),
-        vertex([-1, -1, -1], [1, 1]),
-        // front (0, 1, 0)
-        vertex([1, 1, -1], [1, 0]),
-        vertex([-1, 1, -1], [0, 0]),
-        vertex([-1, 1, 1], [0, 1]),
-        vertex([1, 1, 1], [1, 1]),
-        // back (0, -1, 0)
-        vertex([1, -1, 1], [0, 0]),
-        vertex([-1, -1, 1], [1, 0]),
-        vertex([-1, -1, -1], [1, 1]),
-        vertex([1, -1, -1], [0, 1]),
+        // front
+        vertex([0, 0, 0]),
+        vertex([1, 0, 0]),
+        vertex([1, 0, 1]),
+        vertex([0, 0, 1]),
+        // left
+        vertex([0, 1, 1]),
+        vertex([0, 1, 0]),
     ];
 
     let index_data: &[u16] = &[
         0, 1, 2, 2, 3, 0, // top
-        4, 5, 6, 6, 7, 4, // bottom
         8, 9, 10, 10, 11, 8, // right
-        12, 13, 14, 14, 15, 12, // left
         16, 17, 18, 18, 19, 16, // front
-        20, 21, 22, 22, 23, 20, // back
     ];
 
     (vertex_data.to_vec(), index_data.to_vec())
@@ -150,7 +125,7 @@ impl App {
         const FORMAT: TextureFormat = TextureFormat::R32Uint;
 
         let render_target = device.create_texture(&TextureDescriptor {
-            label: Some("Vertex target"),
+            label: Some("vertex_target"),
             size: Extent3d {
                 width: config.width,
                 height: config.height,
@@ -182,13 +157,13 @@ impl App {
         let (vertex_data, index_data) = create_vertices();
 
         let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
+            label: Some("vertex_buffer"),
             contents: bytemuck::cast_slice(&vertex_data),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
         let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Index Buffer"),
+            label: Some("index_buffer"),
             contents: bytemuck::cast_slice(&index_data),
             usage: wgpu::BufferUsages::INDEX,
         });
@@ -211,7 +186,7 @@ impl App {
         }];
 
         let nodes_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
+            label: Some("nodes_buffer"),
             contents: bytemuck::cast_slice(&nodes),
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         });
@@ -220,26 +195,26 @@ impl App {
         let mx_ref = mx_total.as_ref();
 
         let camera_pos_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
+            label: Some("camera_pos_buffer"),
             contents: bytemuck::bytes_of(&CAMERA_POS),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let camera_view_proj_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: None,
+            label: Some("camera_view_proj_buffer"),
             contents: bytemuck::cast_slice(mx_ref),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("vertex_shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                 "../assets/shaders/vertex_rt.wgsl"
             ))),
         });
 
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: None,
+            label: Some("blit_shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
                 "../assets/shaders/blit.wgsl"
             ))),
@@ -247,7 +222,7 @@ impl App {
 
         let nodes_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("nodes"),
+                label: Some("nodes_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -261,7 +236,7 @@ impl App {
             });
 
         let nodes_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nodes"),
+            label: Some("nodes_group"),
             layout: &nodes_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -271,7 +246,7 @@ impl App {
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera"),
+                label: Some("camera_layout"),
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
@@ -297,7 +272,7 @@ impl App {
             });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera"),
+            label: Some("camera_group"),
             layout: &camera_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -312,13 +287,13 @@ impl App {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("vertex"),
+            label: Some("vertex_pipeline_layout"),
             bind_group_layouts: &[&nodes_bind_group_layout, &camera_bind_group_layout],
             immediate_size: 0,
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
+            label: Some("vertex_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -343,7 +318,7 @@ impl App {
         });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("blit"),
+            label: Some("blit_pipeline"),
             layout: None,
             vertex: wgpu::VertexState {
                 module: &blit_shader,
@@ -369,7 +344,7 @@ impl App {
 
         let blit_view_bind_group_layout = blit_pipeline.get_bind_group_layout(0);
         let blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("view"),
+            label: Some("blit_view"),
             layout: &blit_view_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
@@ -383,6 +358,8 @@ impl App {
             rt_view,
             vertex_buf,
             index_buf,
+            camera_pos_buffer,
+            camera_view_proj_buffer,
             index_count: index_data.len(),
             pipeline,
             blit_pipeline,
@@ -424,12 +401,21 @@ impl App {
 
         self.player_controller.fly_movement(self.delta_time, keys);
 
+        let mx_total = self.player_controller.view_proj();
+        let mx_ref = mx_total.as_ref();
+
+        queue.write_buffer(
+            &self.camera_view_proj_buffer,
+            0,
+            bytemuck::cast_slice(mx_ref),
+        );
+
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Vertex pass"),
+                label: Some("vertex_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.rt_view,
                     depth_slice: None,
@@ -451,18 +437,19 @@ impl App {
             rpass.set_bind_group(0, Some(&self.nodes_bind_group), &[]);
             rpass.set_bind_group(1, Some(&self.camera_bind_group), &[]);
 
-            rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
+            // rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
             rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
 
             rpass.pop_debug_group();
 
-            rpass.insert_debug_marker("Draw");
-            rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
+            rpass.insert_debug_marker("draw");
+            // rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
+            rpass.draw(0..6 as u32, 0..1);
         }
 
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Blit pass"),
+                label: Some("blit_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
