@@ -83,5 +83,9 @@ fn fs_main(vertex: VertexOutput) -> @location(0) vec4<f32> {
         return BLUE;
     }
 
+    if render_color > 3 {
+        return vec4<f32>(1.0);
+    }
+
     return BLACK;
 }

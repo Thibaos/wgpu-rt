@@ -1,9 +1,5 @@
 // Credits: https://pastebin.com/4LsHNxqZ
 
-struct VertexOutput {
-    @builtin(position) position: vec4<f32>,
-};
-
 // The `clip_pos` param is used internally by the GPU's rasterization.
 // All other params are passed to the fragment to do ray tracing.
 // For parameters that do not vary with vertex, use `@interpolate(flat)`.
@@ -15,6 +11,7 @@ struct Params {
     @location(2) @interpolate(flat) octant_scale: f32,
     @location(3) @interpolate(flat) octants: u32,
     @location(4) world_pos: vec3<f32>,
+    @location(5) color_index: u32,
 }
 
 // AABB representing a spatial region covered by an octree node.
@@ -62,6 +59,7 @@ const FACE_STRIP: array<u32, 24u> = array<u32, 24u>(
 @vertex
 fn vertex(
     @location(0) position: vec4<f32>,
+    @location(1) color_index: u32,
     @builtin(vertex_index) v_index: u32,
     @builtin(instance_index) instance_index: u32,
 ) -> Params {
@@ -115,6 +113,7 @@ fn vertex(
     out.clip_pos = transform * vec4<f32>(corner, 1.0);
     // out.clip_pos = transform * position;
     out.world_pos = corner;
+    out.color_index = color_index;
     return out;
 }
 
@@ -133,19 +132,19 @@ const VERY_SMALL: f32 = 1e-6;
 
 @fragment
 fn fragment(in: Params) -> @location(0) u32 {
-    if in.world_pos.x > in.world_pos.y && in.world_pos.x > in.world_pos.z {
-        return 1;
-    }
+    // if in.world_pos.x > in.world_pos.y && in.world_pos.x > in.world_pos.z {
+    //     return 1;
+    // }
 
-    if in.world_pos.y > in.world_pos.x && in.world_pos.y > in.world_pos.z {
-        return 2;
-    }
+    // if in.world_pos.y > in.world_pos.x && in.world_pos.y > in.world_pos.z {
+    //     return 2;
+    // }
 
-    if in.world_pos.z > in.world_pos.x && in.world_pos.z > in.world_pos.y {
-        return 3;
-    }
+    // if in.world_pos.z > in.world_pos.x && in.world_pos.z > in.world_pos.y {
+    //     return 3;
+    // }
 
-    return 0;
+    return in.color_index;
 
     // let pos = camera_pos;
     // let dir = normalize(in.world_pos - pos);

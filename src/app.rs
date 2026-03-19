@@ -25,10 +25,11 @@ struct Uniforms {
 pub struct App {
     rt_view: TextureView,
     vertex_buf: wgpu::Buffer,
-    index_buf: wgpu::Buffer,
+    vertex_count: usize,
+    // index_buf: wgpu::Buffer,
     camera_pos_buffer: wgpu::Buffer,
     camera_view_proj_buffer: wgpu::Buffer,
-    index_count: usize,
+    // index_count: usize,
     pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
     nodes_bind_group: wgpu::BindGroup,
@@ -58,33 +59,31 @@ struct AABB {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct Vertex {
     _pos: [f32; 4],
+    _color_index: u32,
 }
 
-fn vertex(pos: [i8; 3]) -> Vertex {
+const fn vertex(pos: [i8; 3]) -> Vertex {
     Vertex {
         _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
+        _color_index: 1,
     }
 }
 
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
+fn create_vertices() -> (Vec<Vertex>, usize) {
+    const NNN: Vertex = vertex([0, 0, 0]);
+    const PNN: Vertex = vertex([1, 0, 0]);
+    const NNP: Vertex = vertex([0, 0, 1]);
+    const PNP: Vertex = vertex([1, 0, 1]);
+    const NPN: Vertex = vertex([0, 1, 0]);
+    const NPP: Vertex = vertex([0, 1, 1]);
+    const PPN: Vertex = vertex([1, 1, 0]);
+    const PPP: Vertex = vertex([1, 1, 1]);
+
     let vertex_data = [
-        // front
-        vertex([0, 0, 0]),
-        vertex([1, 0, 0]),
-        vertex([1, 0, 1]),
-        vertex([0, 0, 1]),
-        // left
-        vertex([0, 1, 1]),
-        vertex([0, 1, 0]),
+        NNN, PNN, NNP, PNP, PPP, PNN, PPN, NNN, NPN, NNP, NPP, PPP, NPN, PPN,
     ];
 
-    let index_data: &[u16] = &[
-        0, 1, 2, 2, 3, 0, // top
-        8, 9, 10, 10, 11, 8, // right
-        16, 17, 18, 18, 19, 16, // front
-    ];
-
-    (vertex_data.to_vec(), index_data.to_vec())
+    (vertex_data.to_vec(), vertex_data.len())
 }
 
 const CAMERA_POS: glam::Vec3 = glam::Vec3::new(1.5f32, -5.0, 3.0);
@@ -154,7 +153,7 @@ impl App {
         });
 
         let vertex_size = size_of::<Vertex>();
-        let (vertex_data, index_data) = create_vertices();
+        let (vertex_data, vertex_count) = create_vertices();
 
         let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("vertex_buffer"),
@@ -162,20 +161,27 @@ impl App {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("index_buffer"),
-            contents: bytemuck::cast_slice(&index_data),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        // let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //     label: Some("index_buffer"),
+        //     contents: bytemuck::cast_slice(&index_data),
+        //     usage: wgpu::BufferUsages::INDEX,
+        // });
 
         let vertex_buffers = [wgpu::VertexBufferLayout {
             array_stride: vertex_size as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 0,
-                shader_location: 0,
-            }],
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Uint32,
+                    offset: 0,
+                    shader_location: 1,
+                },
+            ],
         }];
 
         let nodes = [AABB {
@@ -357,10 +363,11 @@ impl App {
         App {
             rt_view,
             vertex_buf,
-            index_buf,
+            vertex_count,
+            // index_buf,
             camera_pos_buffer,
             camera_view_proj_buffer,
-            index_count: index_data.len(),
+            // index_count: index_data.len(),
             pipeline,
             blit_pipeline,
             nodes_bind_group,
@@ -444,7 +451,7 @@ impl App {
 
             rpass.insert_debug_marker("draw");
             // rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
-            rpass.draw(0..6 as u32, 0..1);
+            rpass.draw(0..self.vertex_count as u32, 0..1);
         }
 
         {
