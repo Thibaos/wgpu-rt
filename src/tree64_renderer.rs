@@ -102,6 +102,25 @@ pub struct GpuTree64Buffers {
     pub params: wgpu::Buffer,
 }
 
+/// Create a storage buffer holding the 256-color palette as vec4<f32>.
+/// Each RGBA8 entry becomes [r/255, g/255, b/255, a/255].
+pub fn create_palette_buffer(device: &wgpu::Device, palette: &[[u8; 4]; 256]) -> wgpu::Buffer {
+    let float_palette: [[f32; 4]; 256] = std::array::from_fn(|i| {
+        let [r, g, b, a] = palette[i];
+        [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ]
+    });
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("palette"),
+        contents: bytemuck::cast_slice(&float_palette),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    })
+}
+
 #[allow(dead_code)]
 impl GpuTree64 {
     /// Build GpuTree64 from an already-constructed Tree64<u8>.

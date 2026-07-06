@@ -25,6 +25,8 @@ struct SLANG_ParameterGroup_TreeParams_std140_0
 
 @binding(4) @group(0) var<storage, read> leafData_0 : array<u32>;
 
+@binding(5) @group(0) var<storage, read> palette_0 : array<vec4<f32>>;
+
 fn firstbithigh_0( value_0 : u32) -> u32
 {
     var _S1 : u32 = firstLeadingBit(value_0);
@@ -369,6 +371,7 @@ fn Tree64RayCast_0( worldOrigin_0 : vec3<i32>,  rayPos_0 : vec3<f32>,  rayDir_0 
     }
     var hit_0 : HitInfo_0;
     hit_0.MaterialId_0 = u32(0);
+    hit_0.Normal_0 = vec3<f32>(0.0f, 0.0f, 0.0f);
     if(Node_IsLeaf_get_0(node_1))
     {
         skipNextHit_0 = scaleExp_2 <= i32(21);
@@ -416,9 +419,9 @@ fn main(@builtin(global_invocation_id) globalId_0 : vec3<u32>)
     var rayOrigin_0 : vec3<f32> = (((_S32) * (mat4x4<f32>(Camera_0.viewInv_0.data_0[i32(0)][i32(0)], Camera_0.viewInv_0.data_0[i32(1)][i32(0)], Camera_0.viewInv_0.data_0[i32(2)][i32(0)], Camera_0.viewInv_0.data_0[i32(3)][i32(0)], Camera_0.viewInv_0.data_0[i32(0)][i32(1)], Camera_0.viewInv_0.data_0[i32(1)][i32(1)], Camera_0.viewInv_0.data_0[i32(2)][i32(1)], Camera_0.viewInv_0.data_0[i32(3)][i32(1)], Camera_0.viewInv_0.data_0[i32(0)][i32(2)], Camera_0.viewInv_0.data_0[i32(1)][i32(2)], Camera_0.viewInv_0.data_0[i32(2)][i32(2)], Camera_0.viewInv_0.data_0[i32(3)][i32(2)], Camera_0.viewInv_0.data_0[i32(0)][i32(3)], Camera_0.viewInv_0.data_0[i32(1)][i32(3)], Camera_0.viewInv_0.data_0[i32(2)][i32(3)], Camera_0.viewInv_0.data_0[i32(3)][i32(3)])))).xyz;
     var hit_1 : HitInfo_0 = Tree64RayCast_0(vec3<i32>(floor(rayOrigin_0)) - TreeParams_0.rootOffset_0, fract(rayOrigin_0), normalize((((vec4<f32>(normalize((((vec4<f32>(ndc_0.x, ndc_0.y, 1.0f, 1.0f)) * (mat4x4<f32>(Camera_0.projInv_0.data_0[i32(0)][i32(0)], Camera_0.projInv_0.data_0[i32(1)][i32(0)], Camera_0.projInv_0.data_0[i32(2)][i32(0)], Camera_0.projInv_0.data_0[i32(3)][i32(0)], Camera_0.projInv_0.data_0[i32(0)][i32(1)], Camera_0.projInv_0.data_0[i32(1)][i32(1)], Camera_0.projInv_0.data_0[i32(2)][i32(1)], Camera_0.projInv_0.data_0[i32(3)][i32(1)], Camera_0.projInv_0.data_0[i32(0)][i32(2)], Camera_0.projInv_0.data_0[i32(1)][i32(2)], Camera_0.projInv_0.data_0[i32(2)][i32(2)], Camera_0.projInv_0.data_0[i32(3)][i32(2)], Camera_0.projInv_0.data_0[i32(0)][i32(3)], Camera_0.projInv_0.data_0[i32(1)][i32(3)], Camera_0.projInv_0.data_0[i32(2)][i32(3)], Camera_0.projInv_0.data_0[i32(3)][i32(3)])))).xyz), 0.0f)) * (mat4x4<f32>(Camera_0.viewInv_0.data_0[i32(0)][i32(0)], Camera_0.viewInv_0.data_0[i32(1)][i32(0)], Camera_0.viewInv_0.data_0[i32(2)][i32(0)], Camera_0.viewInv_0.data_0[i32(3)][i32(0)], Camera_0.viewInv_0.data_0[i32(0)][i32(1)], Camera_0.viewInv_0.data_0[i32(1)][i32(1)], Camera_0.viewInv_0.data_0[i32(2)][i32(1)], Camera_0.viewInv_0.data_0[i32(3)][i32(1)], Camera_0.viewInv_0.data_0[i32(0)][i32(2)], Camera_0.viewInv_0.data_0[i32(1)][i32(2)], Camera_0.viewInv_0.data_0[i32(2)][i32(2)], Camera_0.viewInv_0.data_0[i32(3)][i32(2)], Camera_0.viewInv_0.data_0[i32(0)][i32(3)], Camera_0.viewInv_0.data_0[i32(1)][i32(3)], Camera_0.viewInv_0.data_0[i32(2)][i32(3)], Camera_0.viewInv_0.data_0[i32(3)][i32(3)])))).xyz));
     var color_0 : vec4<f32>;
-    if((hit_1.MaterialId_0) != u32(0))
+    if((any(((hit_1.Normal_0) != vec3<f32>(0.0f, 0.0f, 0.0f)))))
     {
-        color_0 = vec4<f32>(vec3<f32>(0.60000002384185791f, 0.44999998807907104f, 0.30000001192092896f) * vec3<f32>(max(dot(hit_1.Normal_0, normalize(vec3<f32>(0.5f, 1.0f, 0.30000001192092896f))), 0.10000000149011612f)), 1.0f);
+        color_0 = vec4<f32>(palette_0[hit_1.MaterialId_0].xyz * vec3<f32>(max(dot(hit_1.Normal_0, normalize(vec3<f32>(0.5f, 1.0f, 0.30000001192092896f))), 0.10000000149011612f)), 1.0f);
     }
     else
     {

@@ -40,6 +40,8 @@ cbuffer Camera {
 StructuredBuffer<uint> treeNodes;
 [[vk::binding(4, 0)]]
 StructuredBuffer<uint> leafData;
+[[vk::binding(5, 0)]]
+StructuredBuffer<float4> palette;
 
 // Stub: the original Traversal_OctMirror accesses TreeNodes via a pointer.
 // We need to adapt: wrap our storage buffers into a VoxelMap that the Slang
@@ -65,11 +67,8 @@ void main(uint3 globalId: SV_DispatchThreadID) {
   HitInfo hit = Tree64RayCast(worldOrigin, localPos, rayDir);
 
   float4 color = float4(0, 0, 0, 1);
-  if (hit.MaterialId != 0) {
-    // Material ID 1 = warm stone/brown
-    float3 matColor = float3(0.6, 0.45, 0.3);
-    color = float4(matColor, 1);
-
+  if (any(hit.Normal != float3(0, 0, 0))) {
+    float3 matColor = palette[hit.MaterialId].rgb;
     float3 lightDir = normalize(float3(0.5, 1.0, 0.3));
     float ndotl = max(dot(hit.Normal, lightDir), 0.1);
     color = float4(matColor * ndotl, 1);
@@ -249,6 +248,7 @@ HitInfo Tree64RayCast(int3 worldOrigin, float3 rayPos, float3 rayDir) {
 
   HitInfo hit;
   hit.MaterialId = 0;
+  hit.Normal = float3(0, 0, 0);
 
   if (node.IsLeaf && scaleExp <= 21) {
     pos = GetMirroredPosLocal(pos, rayDir, false);

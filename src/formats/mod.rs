@@ -13,7 +13,7 @@ use crate::formats::chunk::ChunkData;
 pub const WORLD_MAGIC: [u8; 4] = *b"WRLD";
 
 /// Current format version.
-pub const WORLD_VERSION: u32 = 1;
+pub const WORLD_VERSION: u32 = 2;
 
 /// World dimensions (immutable for this format version).
 pub const CHUNK_COUNT_X: u32 = 16;
@@ -64,7 +64,7 @@ impl WorldHeader {
                 "invalid world file magic",
             ));
         }
-        if header.version != WORLD_VERSION {
+        if header.version > WORLD_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported world version: {}", header.version),
@@ -204,12 +204,14 @@ mod tests {
     }
 }
 
-/// Complete world file: header + chunk table + chunk data blobs.
+/// Complete world file: header + chunk table + palette + chunk data blobs.
 pub struct WorldFile {
     pub header: WorldHeader,
     pub table: ChunkTable,
     /// Chunk data indexed by the same flat index as the TOC.
     pub chunks: Vec<Option<ChunkData>>,
+    /// 256-color RGBA8 palette (from .vox file or zeros).
+    pub palette: [[u8; 4]; 256],
 }
 
 impl Default for WorldFile {
@@ -226,6 +228,7 @@ impl WorldFile {
             header,
             table: ChunkTable::new(total as u32),
             chunks: (0..total).map(|_| None).collect(),
+            palette: [[0u8; 4]; 256],
         }
     }
 
@@ -244,6 +247,10 @@ impl WorldFile {
         let toc_start = writer.stream_position()?;
         let zeros = vec![0u8; toc_size];
         writer.write_all(&zeros)?;
+
+        // Write palette blob: 256 colors × 4 bytes = 1024 bytes
+        let palette_bytes: [u8; 1024] = bytemuck::cast(self.palette);
+        writer.write_all(&palette_bytes)?;
 
         // Write chunk data, building TOC entries as we go
         let mut toc_entries = vec![ChunkTocEntry::default(); self.table.entries.len()];
@@ -275,6 +282,16 @@ impl WorldFile {
         let total = header.total_chunks() as usize;
         let table = ChunkTable::read(&mut reader, total as u32)?;
 
+        // Read palette: v2 has 1024-byte palette blob; v1 gets zeros.
+        let palette: [[u8; 4]; 256] = if header.version >= 2 {
+            let mut palette_bytes = [0u8; 1024];
+            reader.read_exact(&mut palette_bytes)?;
+            bytemuck::cast(palette_bytes)
+        } else {
+            log::warn!("World file version 1 has no palette; voxels will render black.");
+            [[0u8; 4]; 256]
+        };
+
         let mut chunks: Vec<Option<ChunkData>> = Vec::with_capacity(total);
 
         for entry in &table.entries {
@@ -291,6 +308,7 @@ impl WorldFile {
             header,
             table,
             chunks,
+            palette,
         })
     }
 }

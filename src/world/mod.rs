@@ -16,6 +16,8 @@ pub struct World {
     pub chunk_count_z: u32,
     pub chunk_voxel_x: u32,
     pub chunk_voxel_z: u32,
+    /// 256-color RGBA8 palette (from .vox file or zeros).
+    pub palette: [[u8; 4]; 256],
 }
 
 impl World {
@@ -50,6 +52,7 @@ impl World {
             chunk_count_z: world_file.header.chunk_count_z,
             chunk_voxel_x: world_file.header.chunk_voxel_x,
             chunk_voxel_z: world_file.header.chunk_voxel_z,
+            palette: world_file.palette,
         })
     }
 

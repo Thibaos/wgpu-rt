@@ -42,6 +42,20 @@ fn main() {
     // Build world structure
     let mut world_file = wgpu_rt::formats::WorldFile::new();
 
+    // Extract palette from .vox file, falling back to default.
+    {
+        let palette_src: &[dot_vox::Color] = if vox_data.palette.is_empty() {
+            &dot_vox::DEFAULT_PALETTE
+        } else {
+            &vox_data.palette
+        };
+        let mut palette_array = [[0u8; 4]; 256];
+        for (i, color) in palette_src.iter().enumerate().take(256) {
+            palette_array[i] = [color.r, color.g, color.b, color.a];
+        }
+        world_file.palette = palette_array;
+    }
+
     eprintln!(
         "Chunk grid: {}x{}x{}, chunk size: {}x{}x{} voxels",
         wgpu_rt::formats::CHUNK_COUNT_X,

@@ -54,6 +54,9 @@ pub struct App {
 
     // Chunk manager (owns GPU buffers)
     chunk_manager: ChunkManager,
+
+    // Palette buffer (world-level color lookup)
+    palette_buffer: wgpu::Buffer,
 }
 
 impl App {
@@ -117,7 +120,7 @@ impl App {
             .join("assets")
             .join("world.world");
 
-        let (_world, chunk_manager) = if world_path.exists() {
+        let (world, chunk_manager) = if world_path.exists() {
             let world = World::load(&world_path).expect("failed to load world file");
             let mut chunk_manager = ChunkManager::new();
             for cz in 0..world.chunk_count_z {
@@ -143,12 +146,15 @@ impl App {
                 chunk_count_z: CHUNK_COUNT_Z,
                 chunk_voxel_x: 256,
                 chunk_voxel_z: 256,
+                palette: [[0u8; 4]; 256],
             };
             (world, ChunkManager::new())
         };
 
         let loaded_count = chunk_manager.loaded_chunks().count();
         log::info!("GPU chunks loaded: {}", loaded_count);
+
+        let palette_buffer = crate::tree64_renderer::create_palette_buffer(device, &world.palette);
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
@@ -271,6 +277,10 @@ impl App {
                             binding: 4,
                             resource: chunk.buffers.leaf_data.as_entire_binding(),
                         },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: palette_buffer.as_entire_binding(),
+                        },
                     ],
                 });
                 (chunk.coord, bg)
@@ -350,6 +360,7 @@ impl App {
             chunk_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
             chunk_manager,
+            palette_buffer,
         }
     }
 
@@ -422,6 +433,10 @@ impl App {
                         wgpu::BindGroupEntry {
                             binding: 4,
                             resource: chunk.buffers.leaf_data.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: self.palette_buffer.as_entire_binding(),
                         },
                     ],
                 });
