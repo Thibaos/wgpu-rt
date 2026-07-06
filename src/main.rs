@@ -1,4 +1,5 @@
 mod app;
+mod formats;
 mod framework;
 mod player_controller;
 mod tree64_renderer;
