@@ -102,10 +102,11 @@ impl App {
         // Build Tree64 from procedural terrain
         let gpu_tree = world::build_tree64();
         log::info!(
-            "Tree64 built: {} nodes, {} bytes of leaf data, tree_scale={}",
+            "Tree64 built: {} nodes, {} bytes of leaf data, tree_scale={}, root_offset={:?}",
             gpu_tree.nodes.len(),
             gpu_tree.leaf_data.len(),
-            gpu_tree.tree_scale
+            gpu_tree.tree_scale,
+            gpu_tree.root_offset
         );
 
         let tree_buffers = gpu_tree.create_buffers(device);

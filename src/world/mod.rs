@@ -2,14 +2,7 @@ use tree64::VoxelModel;
 
 use crate::tree64_renderer::GpuTree64;
 
-/// Precomputed 2D Perlin noise heightmap backing a sparse terrain model.
-///
-/// Dimensions are `[WORLD_SIZE, MAX_HEIGHT, WORLD_SIZE]` so `Tree64::new()`
-/// only probes positions that *can* hold terrain (WORLD_SIZE × MAX_HEIGHT × WORLD_SIZE
-/// ≈ 67M for the default 1024×64×1024). The tree itself spans the full 1024³ space;
-/// the shader traverses empty air above `MAX_HEIGHT` naturally.
 pub struct TerrainModel {
-    /// Height for each (x, z): `heightmap[z * size + x]`
     heightmap: Vec<u8>,
     size: u32,
     max_height: u8,
@@ -17,7 +10,7 @@ pub struct TerrainModel {
 
 impl TerrainModel {
     /// World size in voxels per horizontal axis.
-    pub const WORLD_SIZE: u32 = 1024;
+    pub const WORLD_SIZE: u32 = 512;
     /// Maximum terrain elevation in voxels.
     pub const MAX_HEIGHT: u8 = 64;
     /// Noise feature scale (larger = smoother terrain).

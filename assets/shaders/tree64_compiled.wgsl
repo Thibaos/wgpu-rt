@@ -418,8 +418,7 @@ fn main(@builtin(global_invocation_id) globalId_0 : vec3<u32>)
     var color_0 : vec4<f32>;
     if((hit_1.MaterialId_0) != u32(0))
     {
-        var mat_0 : f32 = f32(hit_1.MaterialId_0) / 255.0f;
-        color_0 = vec4<f32>(mat_0, mat_0 * 0.69999998807907104f, mat_0 * 0.30000001192092896f, 1.0f) * vec4<f32>(max(dot(hit_1.Normal_0, normalize(vec3<f32>(0.5f, 1.0f, 0.30000001192092896f))), 0.10000000149011612f));
+        color_0 = vec4<f32>(vec3<f32>(0.60000002384185791f, 0.44999998807907104f, 0.30000001192092896f) * vec3<f32>(max(dot(hit_1.Normal_0, normalize(vec3<f32>(0.5f, 1.0f, 0.30000001192092896f))), 0.10000000149011612f)), 1.0f);
     }
     else
     {

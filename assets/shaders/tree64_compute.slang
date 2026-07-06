@@ -66,12 +66,13 @@ void main(uint3 globalId: SV_DispatchThreadID) {
 
   float4 color = float4(0, 0, 0, 1);
   if (hit.MaterialId != 0) {
-    float mat = float(hit.MaterialId) / 255.0;
-    color = float4(mat, mat * 0.7, mat * 0.3, 1);
+    // Material ID 1 = warm stone/brown
+    float3 matColor = float3(0.6, 0.45, 0.3);
+    color = float4(matColor, 1);
 
     float3 lightDir = normalize(float3(0.5, 1.0, 0.3));
     float ndotl = max(dot(hit.Normal, lightDir), 0.1);
-    color = color * ndotl;
+    color = float4(matColor * ndotl, 1);
   }
 
   output[globalId.xy] = color;
