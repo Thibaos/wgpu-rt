@@ -144,6 +144,66 @@ impl ChunkTable {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::formats::chunk::ChunkData;
+    use crate::tree64_renderer::{GpuNode, GpuTree64};
+    use std::io::Cursor;
+
+    fn make_dummy_gpu_tree() -> GpuTree64 {
+        GpuTree64 {
+            nodes: vec![
+                GpuNode::new(false, 1, 0b0001_0001_0001_0001u64),
+                GpuNode::new(true, 0, 0b1111_0000_0000_0000u64),
+            ],
+            leaf_data: vec![1, 2, 3, 4],
+            root_node_index: 0,
+            tree_scale: 8,
+            root_offset: [0, 0, 0],
+        }
+    }
+
+    #[test]
+    fn world_file_roundtrip() {
+        let mut world = WorldFile::new();
+
+        // Add a few chunks at known positions
+        let chunk0 = ChunkData::new(make_dummy_gpu_tree());
+        world.set_chunk(0, chunk0);
+
+        let mut chunk5 = make_dummy_gpu_tree();
+        chunk5.leaf_data = vec![5, 6, 7, 8];
+        world.set_chunk(5, ChunkData::new(chunk5));
+
+        // Write to memory
+        let mut buf = Cursor::new(Vec::new());
+        world.write(&mut buf).unwrap();
+
+        // Read back
+        buf.set_position(0);
+        let loaded = WorldFile::read(&mut buf).unwrap();
+
+        // Verify header
+        assert_eq!(loaded.header.magic, WORLD_MAGIC);
+        assert_eq!(loaded.header.version, WORLD_VERSION);
+        assert_eq!(loaded.header.total_chunks(), 256);
+
+        // Verify chunk 0
+        let chunk0_loaded = loaded.chunks[0].as_ref().unwrap();
+        assert_eq!(chunk0_loaded.tree.nodes.len(), 2);
+        assert_eq!(chunk0_loaded.tree.leaf_data, vec![1, 2, 3, 4]);
+
+        // Verify chunk 5
+        let chunk5_loaded = loaded.chunks[5].as_ref().unwrap();
+        assert_eq!(chunk5_loaded.tree.leaf_data, vec![5, 6, 7, 8]);
+
+        // Verify empty chunks are None
+        assert!(loaded.chunks[1].is_none());
+        assert!(loaded.chunks[255].is_none());
+    }
+}
+
 /// Complete world file: header + chunk table + chunk data blobs.
 pub struct WorldFile {
     pub header: WorldHeader,
