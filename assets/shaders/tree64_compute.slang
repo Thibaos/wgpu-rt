@@ -128,7 +128,7 @@ float3 FloorScaleLocal(float3 pos, int scaleExp) {
 
 int GetCellIndex(float3 pos, int scaleExp) {
   uint3 cellPos = asuint(pos) >> uint(scaleExp) & 3;
-  return int(cellPos.x + cellPos.z * 4 + cellPos.y * 16);
+  return int(cellPos.x + cellPos.y * 4 + cellPos.z * 16);
 }
 
 // Mirror position for octant coherence
@@ -161,9 +161,9 @@ HitInfo Tree64RayCast(int3 worldOrigin, float3 rayPos, float3 rayDir) {
   uint mirrorMask = 0;
   if (rayDir.x > 0)
     mirrorMask |= 3 << 0;
-  if (rayDir.z > 0)
-    mirrorMask |= 3 << 2;
   if (rayDir.y > 0)
+    mirrorMask |= 3 << 2;
+  if (rayDir.z > 0)
     mirrorMask |= 3 << 4;
 
   origin = GetMirroredPosLocal(origin, rayDir, true);

@@ -100,7 +100,7 @@ fn ReadNode_0( index_0 : u32) -> Node_0
 fn GetCellIndex_0( pos_2 : vec3<f32>,  scaleExp_0 : i32) -> i32
 {
     var cellPos_0 : vec3<u32> = ((((bitcast<vec3<u32>>((pos_2))) >> (vec3<u32>(u32(scaleExp_0))))) & (vec3<u32>(u32(3))));
-    return i32(cellPos_0.x + cellPos_0.z * u32(4) + cellPos_0.y * u32(16));
+    return i32(cellPos_0.x + cellPos_0.y * u32(4) + cellPos_0.z * u32(16));
 }
 
 fn Node_PopMask_get_0( this_0 : Node_0) -> u64
@@ -187,11 +187,11 @@ fn Tree64RayCast_0( worldOrigin_0 : vec3<i32>,  rayPos_0 : vec3<f32>,  rayDir_0 
     {
         mirrorMask_0 = u32(0);
     }
-    if((rayDir_0.z) > 0.0f)
+    if((rayDir_0.y) > 0.0f)
     {
         mirrorMask_0 = (mirrorMask_0 | (u32(12)));
     }
-    if((rayDir_0.y) > 0.0f)
+    if((rayDir_0.z) > 0.0f)
     {
         mirrorMask_0 = (mirrorMask_0 | (u32(48)));
     }
