@@ -1,90 +1,64 @@
 pub mod chunk_manager;
 
-use tree64::VoxelModel;
+use std::fs::File;
+use std::io::BufReader;
+use std::path::Path;
 
+use crate::formats::WorldFile;
 use crate::tree64_renderer::GpuTree64;
 
-pub struct TerrainModel {
-    heightmap: Vec<u8>,
-    size: u32,
-    max_height: u8,
+/// Loaded world state: all chunks (some may be empty) and their metadata.
+pub struct World {
+    /// GpuTree64 for each chunk. Index: chunks[x + z * CHUNK_COUNT_X].
+    /// None means the chunk was empty (not present in the .world file).
+    pub chunks: Vec<Option<GpuTree64>>,
+    pub chunk_count_x: u32,
+    pub chunk_count_z: u32,
+    pub chunk_voxel_x: u32,
+    pub chunk_voxel_z: u32,
 }
 
-impl TerrainModel {
-    /// World size in voxels per horizontal axis.
-    pub const WORLD_SIZE: u32 = 512;
-    /// Maximum terrain elevation in voxels.
-    pub const MAX_HEIGHT: u8 = 64;
-    /// Noise feature scale (larger = smoother terrain).
-    const NOISE_SCALE: f64 = 256.0;
+impl World {
+    /// Load a .world file from disk.
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, String> {
+        let file = File::open(path.as_ref())
+            .map_err(|e| format!("failed to open world file {}: {e}", path.as_ref().display()))?;
+        let mut reader = BufReader::new(file);
+        let world_file = WorldFile::read(&mut reader)
+            .map_err(|e| format!("failed to read world file: {e}"))?;
 
-    pub fn new(seed: u32) -> Self {
-        use noise::{NoiseFn, Perlin};
+        let total = world_file.header.total_chunks() as usize;
+        let mut chunks: Vec<Option<GpuTree64>> = Vec::with_capacity(total);
 
-        let perlin = Perlin::new(seed);
-        let size = Self::WORLD_SIZE as usize;
-        let mut heightmap = vec![0u8; size * size];
-
-        for z in 0..size {
-            for x in 0..size {
-                let nx = x as f64 / Self::NOISE_SCALE;
-                let nz = z as f64 / Self::NOISE_SCALE;
-
-                let h = perlin.get([nx, nz])
-                    + 0.5 * perlin.get([nx * 2.0 + 100.0, nz * 2.0 + 100.0])
-                    + 0.25 * perlin.get([nx * 4.0 + 200.0, nz * 4.0 + 200.0]);
-
-                let normalized = (h + 1.75) / 3.5;
-                let clamped = normalized.clamp(0.0, 1.0);
-                let height = (clamped * Self::MAX_HEIGHT as f64) as u8;
-                heightmap[z * size + x] = height;
-            }
+        for chunk_opt in world_file.chunks {
+            chunks.push(chunk_opt.map(|cd| cd.tree));
         }
 
-        Self {
-            heightmap,
-            size: Self::WORLD_SIZE,
-            max_height: Self::MAX_HEIGHT,
-        }
+        let loaded_count = chunks.iter().filter(|c| c.is_some()).count();
+
+        log::info!(
+            "Loaded world: {} chunks ({} non-empty), grid {}×{}",
+            total,
+            loaded_count,
+            world_file.header.chunk_count_x,
+            world_file.header.chunk_count_z,
+        );
+
+        Ok(Self {
+            chunks,
+            chunk_count_x: world_file.header.chunk_count_x,
+            chunk_count_z: world_file.header.chunk_count_z,
+            chunk_voxel_x: world_file.header.chunk_voxel_x,
+            chunk_voxel_z: world_file.header.chunk_voxel_z,
+        })
     }
-}
 
-impl VoxelModel<u8> for TerrainModel {
-    fn dimensions(&self) -> [u32; 3] {
-        [self.size, self.max_height as u32, self.size]
-    }
-
-    fn access(&self, coord: [usize; 3]) -> Option<u8> {
-        let (x, y, z) = (coord[0], coord[1], coord[2]);
-
-        // Out of horizontal bounds → always empty
-        if x >= self.size as usize || z >= self.size as usize {
+    /// Get the GpuTree64 for a chunk, if present.
+    pub fn get_chunk(&self, x: u32, z: u32) -> Option<&GpuTree64> {
+        if x >= self.chunk_count_x || z >= self.chunk_count_z {
             return None;
         }
-        // Above max terrain height → always empty
-        if y >= self.max_height as usize {
-            return None;
-        }
-
-        let terrain_height = self.heightmap[z * self.size as usize + x] as usize;
-        if y < terrain_height {
-            // Material varies by height: lower = darker (stone), upper = lighter (grass/snow)
-            Some(1)
-        } else {
-            None
-        }
+        let index = (x + z * self.chunk_count_x) as usize;
+        self.chunks[index].as_ref()
     }
-}
-
-/// Build a Tree64 from procedural Perlin-noise terrain.
-pub fn build_tree64() -> GpuTree64 {
-    log::info!(
-        "Generating Perlin terrain: {}×{}×{} world...",
-        TerrainModel::WORLD_SIZE,
-        TerrainModel::MAX_HEIGHT,
-        TerrainModel::WORLD_SIZE,
-    );
-
-    let model = TerrainModel::new(42);
-    GpuTree64::from_model(&model)
 }
