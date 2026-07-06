@@ -16,10 +16,6 @@ impl TerrainModel {
     /// Noise feature scale (larger = smoother terrain).
     const NOISE_SCALE: f64 = 256.0;
 
-    /// Generate a terrain heightmap from Perlin noise.
-    ///
-    /// Uses 3-octave FBM: primary + 0.5×2× + 0.25×4×.
-    /// `seed` controls the noise permutation.
     pub fn new(seed: u32) -> Self {
         use noise::{NoiseFn, Perlin};
 
@@ -32,12 +28,10 @@ impl TerrainModel {
                 let nx = x as f64 / Self::NOISE_SCALE;
                 let nz = z as f64 / Self::NOISE_SCALE;
 
-                // 3-octave FBM
                 let h = perlin.get([nx, nz])
                     + 0.5 * perlin.get([nx * 2.0 + 100.0, nz * 2.0 + 100.0])
                     + 0.25 * perlin.get([nx * 4.0 + 200.0, nz * 4.0 + 200.0]);
 
-                // Normalize from ~[-1.75, 1.75] to [0, 1]
                 let normalized = (h + 1.75) / 3.5;
                 let clamped = normalized.clamp(0.0, 1.0);
                 let height = (clamped * Self::MAX_HEIGHT as f64) as u8;

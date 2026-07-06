@@ -12,7 +12,6 @@ use winit::keyboard::{Key, SmolStr};
 use crate::player_controller::PlayerController;
 use crate::world;
 
-/// Camera uniforms passed to the compute shader.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CameraUniforms {
@@ -74,7 +73,6 @@ impl App {
         let height = config.height;
         let format = TextureFormat::Rgba8Unorm;
 
-        // Create ray tracing output texture
         let rt_texture = device.create_texture(&TextureDescriptor {
             label: Some("rt_output"),
             size: Extent3d {
@@ -99,7 +97,6 @@ impl App {
             ..Default::default()
         });
 
-        // Build Tree64 from procedural terrain
         let gpu_tree = world::build_tree64();
         log::info!(
             "Tree64 built: {} nodes, {} bytes of leaf data, tree_scale={}, root_offset={:?}",
@@ -111,7 +108,6 @@ impl App {
 
         let tree_buffers = gpu_tree.create_buffers(device);
 
-        // Camera buffer
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
         let camera_uniforms = CameraUniforms {
@@ -138,7 +134,6 @@ impl App {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Compute shader
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tree64_raycast"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
@@ -146,12 +141,10 @@ impl App {
             ))),
         });
 
-        // Bind group layout
         let tree_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("tree64_bind_layout"),
                 entries: &[
-                    // binding 0: output texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -162,7 +155,6 @@ impl App {
                         },
                         count: None,
                     },
-                    // binding 1: tree params
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -173,7 +165,6 @@ impl App {
                         },
                         count: None,
                     },
-                    // binding 2: camera
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -184,7 +175,6 @@ impl App {
                         },
                         count: None,
                     },
-                    // binding 3: tree nodes (storage)
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -195,7 +185,6 @@ impl App {
                         },
                         count: None,
                     },
-                    // binding 4: leaf data (storage)
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -252,7 +241,6 @@ impl App {
             cache: None,
         });
 
-        // Blit shader
         let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit_shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
@@ -338,7 +326,6 @@ impl App {
         self.update_delta_time();
         self.player_controller.fly_movement(self.delta_time, keys);
 
-        // Update camera uniforms
         let aspect = self.surface_width as f32 / self.surface_height as f32;
         let camera_uniforms = CameraUniforms {
             pos: [
@@ -363,7 +350,6 @@ impl App {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // Compute pass: ray trace the Tree64
         {
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("tree64_compute_pass"),
@@ -378,7 +364,6 @@ impl App {
             cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
         }
 
-        // Render pass: blit to screen
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blit_pass"),

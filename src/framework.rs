@@ -259,19 +259,19 @@ impl ApplicationHandler for Framework {
                     },
                 ..
             } => {
-                if let Key::Named(NamedKey::Escape) = &logical_key {
-                    if !self.pressed_keys.contains(&Key::Named(NamedKey::Escape)) {
-                        match self.cursor_grab_mode {
-                            CursorGrabMode::None => {
-                                self.cursor_grab_mode = CursorGrabMode::Confined;
-                                window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
-                                window.set_cursor_visible(false);
-                            }
-                            _ => {
-                                self.cursor_grab_mode = CursorGrabMode::None;
-                                window.set_cursor_grab(CursorGrabMode::None).unwrap();
-                                window.set_cursor_visible(true);
-                            }
+                if let Key::Named(NamedKey::Escape) = &logical_key
+                    && !self.pressed_keys.contains(&Key::Named(NamedKey::Escape))
+                {
+                    match self.cursor_grab_mode {
+                        CursorGrabMode::None => {
+                            self.cursor_grab_mode = CursorGrabMode::Confined;
+                            window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
+                            window.set_cursor_visible(false);
+                        }
+                        _ => {
+                            self.cursor_grab_mode = CursorGrabMode::None;
+                            window.set_cursor_grab(CursorGrabMode::None).unwrap();
+                            window.set_cursor_visible(true);
                         }
                     }
                 }

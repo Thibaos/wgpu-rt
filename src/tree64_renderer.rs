@@ -1,27 +1,7 @@
-//! Tree64 acceleration structure renderer.
-//!
-//! Wraps the `tree64` crate (CPU sparse 4³ voxel tree) and uploads it to the GPU
-//! for traversal via a compute shader. The node layout matches VoxelRT's Tree64:
-//!
-//! ```ignore
-//! #[repr(C, packed)]
-//! struct Node {
-//!     is_leaf_and_ptr: u32,  // bit 0 = is_leaf, bits 1..31 = child_ptr (or data_ptr)
-//!     pop_mask: u64,          // 64-bit occupancy mask (4³ = 64 children/voxels)
-//! }
-//! // Total: 12 bytes per node
-//! ```
-//!
-//! On the GPU, we upload two buffers:
-//! - `nodes`: array of `Node` (12 bytes each, read as `array<u32>` with 3 u32s per node)
-//! - `data`: array of `u8` leaf voxel material IDs
-
 use bytemuck::{Pod, Zeroable};
 use tree64::{Tree64, VoxelModel};
 use wgpu::util::DeviceExt;
 
-/// GPU-compatible node layout matching VoxelRT's CompressedNode.
-/// Must stay in sync with the WGSL shader's `Node` struct.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct GpuNode {
@@ -42,7 +22,6 @@ impl GpuNode {
     }
 }
 
-/// A GPU-ready Tree64 with uploaded buffers.
 pub struct GpuTree64 {
     pub nodes: Vec<GpuNode>,
     pub leaf_data: Vec<u8>,
@@ -52,7 +31,6 @@ pub struct GpuTree64 {
 }
 
 impl GpuTree64 {
-    /// Build a GpuTree64 from any `VoxelModel<u8>` adapter.
     pub fn from_model(model: &impl VoxelModel<u8>) -> Self {
         let tree = Tree64::new(model);
         let root_state = tree.root_state();
@@ -84,7 +62,6 @@ impl GpuTree64 {
         }
     }
 
-    /// Create GPU buffers from this tree.
     pub fn create_buffers(&self, device: &wgpu::Device) -> GpuTree64Buffers {
         let nodes_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("tree64_nodes"),
@@ -118,30 +95,18 @@ impl GpuTree64 {
     }
 }
 
-/// GPU buffers for a Tree64.
 pub struct GpuTree64Buffers {
     pub nodes: wgpu::Buffer,
     pub leaf_data: wgpu::Buffer,
     pub params: wgpu::Buffer,
 }
 
-/// Uniform/parameter struct for the Tree64 traversal shader.
-///
-/// Layout must match the Slang std140 uniform block exactly:
-/// ```wgsl
-/// struct SLANG_ParameterGroup_TreeParams_std140_0 {
-///     @align(16) rootNodeIndex_0 : u32,
-///     @align(4)  treeScale_0     : u32,
-///     @align(16) rootOffset_0    : vec3<i32>,
-/// };
-/// ```
-/// Std140: rootNodeIndex@0, treeScale@4, 8B implicit padding, rootOffset@16.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Tree64Params {
-    pub root_node_index: u32, // offset 0
-    pub tree_scale: u32,      // offset 4
-    pub _pad0: [u32; 2],      // offset 8  — std140 padding to align vec3 to 16
+    pub root_node_index: u32,  // offset 0
+    pub tree_scale: u32,       // offset 4
+    pub _pad0: [u32; 2],       // offset 8  — std140 padding to align vec3 to 16
     pub root_offset: [i32; 3], // offset 16
-    pub _pad1: u32,           // offset 28 — end padding to reach 32 bytes
+    pub _pad1: u32,            // offset 28 — end padding to reach 32 bytes
 }
