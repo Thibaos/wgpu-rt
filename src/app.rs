@@ -121,9 +121,14 @@ impl App {
                 1.0,
             ],
             view_inv: player_controller.view().inverse().to_cols_array_2d(),
-            proj_inv: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0)
-                .inverse()
-                .to_cols_array_2d(),
+            proj_inv: glam::camera::rh::proj::vulkan::perspective(
+                std::f32::consts::FRAC_PI_4,
+                aspect,
+                0.1,
+                10000.0,
+            )
+            .inverse()
+            .to_cols_array_2d(),
         };
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -233,7 +238,7 @@ impl App {
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("tree64_pipeline_layout"),
-                bind_group_layouts: &[&tree_bind_group_layout],
+                bind_group_layouts: &[Some(&tree_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -342,9 +347,14 @@ impl App {
                 1.0,
             ],
             view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
-            proj_inv: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0)
-                .inverse()
-                .to_cols_array_2d(),
+            proj_inv: glam::camera::rh::proj::vulkan::perspective(
+                std::f32::consts::FRAC_PI_4,
+                aspect,
+                0.1,
+                10000.0,
+            )
+            .inverse()
+            .to_cols_array_2d(),
         };
 
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniforms));

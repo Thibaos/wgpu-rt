@@ -38,7 +38,11 @@ impl Default for PlayerController {
             translation,
             yaw: 0.0,
             pitch: 0.0,
-            view: glam::Mat4::look_at_rh(translation, Vec3::new(32.0, 16.0, 32.0), Vec3::Y),
+            view: glam::camera::rh::view::look_at_mat4(
+                translation,
+                Vec3::new(32.0, 16.0, 32.0),
+                Vec3::Y,
+            ),
             needs_view_update: true,
         }
     }
@@ -110,7 +114,8 @@ impl PlayerController {
         let forward = rot * Vec3::new(0.0, 0.0, -1.0);
         let up = rot * Vec3::new(0.0, 1.0, 0.0);
 
-        self.view = Mat4::look_at_rh(self.translation, self.translation + forward, up);
+        self.view =
+            glam::camera::rh::view::look_at_mat4(self.translation, self.translation + forward, up);
     }
 
     pub fn handle_speed_change(&mut self, y_delta: f32) {

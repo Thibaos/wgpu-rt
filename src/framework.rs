@@ -131,23 +131,10 @@ impl SurfaceWrapper {
         let surface = self.surface.as_ref().unwrap();
 
         match surface.get_current_texture() {
-            Ok(frame) => frame,
-            // If we timed out, just try again
-            Err(wgpu::SurfaceError::Timeout) => surface
-                .get_current_texture()
-                .expect("Failed to acquire next surface texture!"),
-            Err(
-                // If the surface is outdated, or was lost, reconfigure it.
-                wgpu::SurfaceError::Outdated
-                | wgpu::SurfaceError::Lost
-                | wgpu::SurfaceError::Other
-                // If OutOfMemory happens, reconfiguring may not help, but we might as well try
-                | wgpu::SurfaceError::OutOfMemory,
-            ) => {
+            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            _ => {
                 surface.configure(&context.device, self.config());
-                surface
-                    .get_current_texture()
-                    .expect("Failed to acquire next surface texture!")
+                panic!("Failed to acquire next surface texture!");
             }
         }
     }
@@ -182,8 +169,8 @@ impl RenderContext {
     async fn init_async(surface: &mut SurfaceWrapper) -> Self {
         log::info!("Initializing wgpu...");
 
-        let instance_descriptor = wgpu::InstanceDescriptor::from_env_or_default();
-        let instance = wgpu::Instance::new(&instance_descriptor);
+        let instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        let instance = wgpu::Instance::new(instance_descriptor);
         let adapter = get_adapter_with_capabilities_or_from_env(
             &instance,
             &App::required_features(),
@@ -369,7 +356,7 @@ async fn start() {
                         );
 
                         window_loop.window.pre_present_notify();
-                        frame.present();
+                        context.queue.present(frame);
 
                         window_loop.window.request_redraw();
                     }

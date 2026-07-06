@@ -18,3 +18,7 @@ performer across all tested scenes (108-182 Mrays/s on integrated GPU).
   slang shader. ~20 iterations average per ray.
 - **Rendering**: Compute dispatch writes to storage texture, blitted to screen.
   Camera uses a simple fly controller.
+
+### Github
+
+This is a solo project, don't open PRs.
