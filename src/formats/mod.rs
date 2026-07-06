@@ -5,7 +5,9 @@
 
 pub mod chunk;
 
-use std::io;
+use std::io::{self};
+
+use crate::formats::chunk::ChunkData;
 
 /// Magic bytes identifying a .world file.
 pub const WORLD_MAGIC: [u8; 4] = *b"WRLD";
@@ -139,5 +141,96 @@ impl ChunkTable {
     /// Layout: index = x + z * chunk_count_x  (y is always 0 since chunk_count_y = 1).
     pub fn chunk_index(x: u32, _y: u32, z: u32, chunk_count_x: u32) -> usize {
         (x + z * chunk_count_x) as usize
+    }
+}
+
+/// Complete world file: header + chunk table + chunk data blobs.
+pub struct WorldFile {
+    pub header: WorldHeader,
+    pub table: ChunkTable,
+    /// Chunk data indexed by the same flat index as the TOC.
+    pub chunks: Vec<Option<ChunkData>>,
+}
+
+impl Default for WorldFile {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WorldFile {
+    pub fn new() -> Self {
+        let header = WorldHeader::new();
+        let total = header.total_chunks() as usize;
+        Self {
+            header,
+            table: ChunkTable::new(total as u32),
+            chunks: (0..total).map(|_| None).collect(),
+        }
+    }
+
+    /// Set chunk data for the given flat index.
+    pub fn set_chunk(&mut self, index: usize, data: ChunkData) {
+        self.chunks[index] = Some(data);
+    }
+
+    /// Write the complete world file.
+    pub fn write(&self, mut writer: impl io::Write + io::Seek) -> io::Result<()> {
+        // Write header (64 bytes)
+        self.header.write(&mut writer)?;
+
+        // Reserve space for the TOC (write placeholder zeros, seek back later)
+        let toc_size = self.table.entries.len() * 16;
+        let toc_start = writer.stream_position()?;
+        let zeros = vec![0u8; toc_size];
+        writer.write_all(&zeros)?;
+
+        // Write chunk data, building TOC entries as we go
+        let mut toc_entries = vec![ChunkTocEntry::default(); self.table.entries.len()];
+
+        for (i, chunk_opt) in self.chunks.iter().enumerate() {
+            if let Some(chunk) = chunk_opt {
+                let offset = writer.stream_position()?;
+                chunk.write(&mut writer)?;
+                let end = writer.stream_position()?;
+                toc_entries[i] = ChunkTocEntry {
+                    byte_offset: offset,
+                    size: end - offset,
+                };
+            }
+        }
+
+        // Seek back and write the TOC
+        writer.seek(io::SeekFrom::Start(toc_start))?;
+        for entry in &toc_entries {
+            entry.write(&mut writer)?;
+        }
+
+        Ok(())
+    }
+
+    /// Read a complete world file.
+    pub fn read(mut reader: impl io::Read + io::Seek) -> io::Result<Self> {
+        let header = WorldHeader::read(&mut reader)?;
+        let total = header.total_chunks() as usize;
+        let table = ChunkTable::read(&mut reader, total as u32)?;
+
+        let mut chunks: Vec<Option<ChunkData>> = Vec::with_capacity(total);
+
+        for entry in &table.entries {
+            if entry.byte_offset == 0 {
+                chunks.push(None);
+            } else {
+                reader.seek(io::SeekFrom::Start(entry.byte_offset))?;
+                let data = ChunkData::read(&mut reader)?;
+                chunks.push(Some(data));
+            }
+        }
+
+        Ok(Self {
+            header,
+            table,
+            chunks,
+        })
     }
 }
