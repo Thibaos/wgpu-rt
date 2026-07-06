@@ -68,7 +68,10 @@ impl SurfaceWrapper {
                     break;
                 }
                 _ => {
-                    log::error!("Surface acquire failed (attempt {}/3), retrying...", attempt + 1);
+                    log::error!(
+                        "Surface acquire failed (attempt {}/3), retrying...",
+                        attempt + 1
+                    );
                     std::thread::yield_now();
                 }
             }
@@ -77,7 +80,8 @@ impl SurfaceWrapper {
         // Final attempt: reconfigure and try one more time
         surface.configure(&context.device, config);
         match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
+            wgpu::CurrentSurfaceTexture::Success(frame)
+            | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
             _ => {
                 log::error!("Failed to acquire surface texture after reconfiguration");
                 None
@@ -326,17 +330,19 @@ impl ApplicationHandler for Framework {
             WindowEvent::RedrawRequested => {
                 self.frame_counter.update();
 
-                let frame = self.surface.acquire(context);
-                let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
-                    format: Some(self.surface.config().view_formats[0]),
-                    ..Default::default()
-                });
+                if let Some(frame) = self.surface.acquire(context) {
+                    let view = frame.texture.create_view(&wgpu::TextureViewDescriptor {
+                        format: Some(self.surface.config().view_formats[0]),
+                        ..Default::default()
+                    });
 
-                app.render(&view, &context.device, &context.queue, &self.pressed_keys);
+                    app.render(&view, &context.device, &context.queue, &self.pressed_keys);
 
-                window.pre_present_notify();
-                context.queue.present(frame);
-
+                    window.pre_present_notify();
+                    context.queue.present(frame);
+                }
+                // Always request redraw — even on acquire failure, we want to keep
+                // trying on the next frame.
                 window.request_redraw();
             }
             other => {
