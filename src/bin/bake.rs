@@ -5,6 +5,7 @@
 //! The tool reads a .vox file, partitions the voxel grid into 16x16 chunks,
 //! builds a Tree64 per chunk, and writes a .world file.
 
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::BufWriter;
@@ -58,16 +59,20 @@ fn main() {
                 let chunk_y_min = cy * wgpu_rt::formats::CHUNK_VOXEL_Y;
                 let chunk_z_min = cz * wgpu_rt::formats::CHUNK_VOXEL_Z;
 
-                // Build a VoxelModel for this chunk's region
-                let chunk_model = ChunkVoxelModel {
-                    source: model,
-                    offset_x: chunk_x_min,
-                    offset_y: chunk_y_min,
-                    offset_z: chunk_z_min,
-                    chunk_size_x: wgpu_rt::formats::CHUNK_VOXEL_X,
-                    chunk_size_y: wgpu_rt::formats::CHUNK_VOXEL_Y,
-                    chunk_size_z: wgpu_rt::formats::CHUNK_VOXEL_Z,
-                };
+                // Build a VoxelModel for this chunk's region.
+                // Clips to source model bounds internally.
+                let chunk_model = ChunkVoxelModel::new(
+                    model,
+                    chunk_x_min, chunk_y_min, chunk_z_min,
+                    wgpu_rt::formats::CHUNK_VOXEL_X,
+                    wgpu_rt::formats::CHUNK_VOXEL_Y,
+                    wgpu_rt::formats::CHUNK_VOXEL_Z,
+                );
+
+                // Skip chunks that have no overlap with the source model
+                if chunk_model.chunk_size_x == 0 || chunk_model.chunk_size_y == 0 || chunk_model.chunk_size_z == 0 {
+                    continue;
+                }
 
                 // Build the Tree64
                 let tree = tree64::Tree64::new(&chunk_model);
@@ -111,14 +116,45 @@ fn main() {
 
 /// A VoxelModel that wraps a dot_vox model and exposes a sub-region
 /// as if it's a standalone model at origin (0,0,0).
+///
+/// Uses a HashMap for O(1) voxel lookup, built once from the source voxel list.
 struct ChunkVoxelModel<'a> {
-    source: &'a dot_vox::Model,
+    source_size: &'a dot_vox::Size,
+    voxel_map: HashMap<(u8, u8, u8), u8>,
     offset_x: u32,
     offset_y: u32,
     offset_z: u32,
     chunk_size_x: u32,
     chunk_size_y: u32,
     chunk_size_z: u32,
+}
+
+impl<'a> ChunkVoxelModel<'a> {
+    fn new(source: &'a dot_vox::Model, offset_x: u32, offset_y: u32, offset_z: u32,
+           chunk_size_x: u32, chunk_size_y: u32, chunk_size_z: u32) -> Self {
+        let mut voxel_map: HashMap<(u8, u8, u8), u8> = HashMap::new();
+        for v in &source.voxels {
+            voxel_map.insert((v.x, v.y, v.z), v.i);
+        }
+
+        // Clip chunk dimensions to source model bounds so Tree64::new doesn't
+        // traverse a massive empty volume.
+        let src_end_x = offset_x + chunk_size_x;
+        let src_end_y = offset_y + chunk_size_y;
+        let src_end_z = offset_z + chunk_size_z;
+        let clipped_w = (source.size.x.min(src_end_x)).saturating_sub(offset_x);
+        let clipped_h = (source.size.y.min(src_end_y)).saturating_sub(offset_y);
+        let clipped_d = (source.size.z.min(src_end_z)).saturating_sub(offset_z);
+
+        Self {
+            source_size: &source.size,
+            voxel_map,
+            offset_x, offset_y, offset_z,
+            chunk_size_x: clipped_w,
+            chunk_size_y: clipped_h,
+            chunk_size_z: clipped_d,
+        }
+    }
 }
 
 impl<'a> tree64::VoxelModel<u8> for &'a ChunkVoxelModel<'a> {
@@ -137,19 +173,13 @@ impl<'a> tree64::VoxelModel<u8> for &'a ChunkVoxelModel<'a> {
         let global_y = self.offset_y + y;
         let global_z = self.offset_z + z;
 
-        if global_x >= self.source.size.x
-            || global_y >= self.source.size.y
-            || global_z >= self.source.size.z
+        if global_x >= self.source_size.x
+            || global_y >= self.source_size.y
+            || global_z >= self.source_size.z
         {
             return None;
         }
 
-        // dot_vox stores voxels as a sparse list, each with its own (x, y, z, i).
-        // Linear-scan to find the voxel at (global_x, global_y, global_z).
-        self.source
-            .voxels
-            .iter()
-            .find(|v| v.x == global_x as u8 && v.y == global_y as u8 && v.z == global_z as u8)
-            .map(|v| v.i)
+        self.voxel_map.get(&(global_x as u8, global_y as u8, global_z as u8)).copied()
     }
 }
