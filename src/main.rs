@@ -1,11 +1,3 @@
-mod app;
-mod formats;
-mod framework;
-mod player_controller;
-mod tree64_renderer;
-mod utils;
-mod world;
-
 fn main() {
-    framework::run();
+    wgpu_rt::framework::run();
 }

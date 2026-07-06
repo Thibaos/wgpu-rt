@@ -16,3 +16,7 @@ rand = "0.10"
 tree64 = { git = "https://github.com/expenses/tree64", version = "0.1.0" }
 wgpu = "30"
 winit = "0.30"
+
+[[bin]]
+name = "bake"
+path = "src/bin/bake.rs"
