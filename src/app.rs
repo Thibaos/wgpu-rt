@@ -9,8 +9,10 @@ use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
+use crate::formats::{CHUNK_COUNT_X, CHUNK_COUNT_Z};
 use crate::player_controller::PlayerController;
-use crate::world;
+use crate::world::chunk_manager::{ChunkCoord, ChunkManager};
+use crate::world::World;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -23,7 +25,9 @@ struct CameraUniforms {
 pub struct App {
     // Compute pipeline
     compute_pipeline: wgpu::ComputePipeline,
-    tree_bind_group: wgpu::BindGroup,
+
+    // Per-chunk bind groups (no single tree_bind_group)
+    chunk_bind_groups: Vec<(ChunkCoord, wgpu::BindGroup)>,
 
     // Camera
     camera_buffer: wgpu::Buffer,
@@ -45,13 +49,11 @@ pub struct App {
     rt_texture: wgpu::Texture,
 
     // Layouts (reused for bind-group recreation on resize)
-    tree_bind_group_layout: wgpu::BindGroupLayout,
+    chunk_bind_group_layout: wgpu::BindGroupLayout,
     blit_bind_group_layout: wgpu::BindGroupLayout,
 
-    // Tree buffers (needed for bind-group recreation on resize)
-    tree_params_buffer: wgpu::Buffer,
-    tree_nodes_buffer: wgpu::Buffer,
-    tree_leaf_data_buffer: wgpu::Buffer,
+    // Chunk manager (owns GPU buffers)
+    chunk_manager: ChunkManager,
 }
 
 impl App {
@@ -109,16 +111,45 @@ impl App {
             ..Default::default()
         });
 
-        let gpu_tree = world::build_tree64();
-        log::info!(
-            "Tree64 built: {} nodes, {} bytes of leaf data, tree_scale={}, root_offset={:?}",
-            gpu_tree.nodes.len(),
-            gpu_tree.leaf_data.len(),
-            gpu_tree.tree_scale,
-            gpu_tree.root_offset
-        );
+        // Load world from a hardcoded path for now.
+        let world_path = std::env::current_dir()
+            .unwrap_or_default()
+            .join("assets")
+            .join("world.world");
 
-        let tree_buffers = gpu_tree.create_buffers(device);
+        let (_world, chunk_manager) = if world_path.exists() {
+            let world = World::load(&world_path)
+                .expect("failed to load world file");
+            let mut chunk_manager = ChunkManager::new();
+            for cz in 0..world.chunk_count_z {
+                for cx in 0..world.chunk_count_x {
+                    let coord = ChunkCoord { x: cx, y: 0, z: cz };
+                    if let Some(tree) = world.get_chunk(cx, cz) {
+                        chunk_manager.load_chunk(coord, tree.clone_ref(), device);
+                    }
+                }
+            }
+            (world, chunk_manager)
+        } else {
+            log::warn!(
+                "World file not found at {:?}, using empty world. \
+                 Run `cargo run --bin bake` first.",
+                world_path
+            );
+            let world = World {
+                chunks: (0..(CHUNK_COUNT_X * CHUNK_COUNT_Z) as usize)
+                    .map(|_| None)
+                    .collect(),
+                chunk_count_x: CHUNK_COUNT_X,
+                chunk_count_z: CHUNK_COUNT_Z,
+                chunk_voxel_x: 256,
+                chunk_voxel_z: 256,
+            };
+            (world, ChunkManager::new())
+        };
+
+        let loaded_count = chunk_manager.loaded_chunks().count();
+        log::info!("GPU chunks loaded: {}", loaded_count);
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
@@ -153,7 +184,7 @@ impl App {
             ))),
         });
 
-        let tree_bind_group_layout =
+        let chunk_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("tree64_bind_layout"),
                 entries: &[
@@ -210,37 +241,47 @@ impl App {
                 ],
             });
 
-        let tree_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tree64_bind_group"),
-            layout: &tree_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: tree_buffers.params.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: tree_buffers.nodes.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: tree_buffers.leaf_data.as_entire_binding(),
-                },
-            ],
-        });
+        // Build one bind group per loaded chunk
+        let chunk_bind_groups: Vec<(ChunkCoord, wgpu::BindGroup)> = chunk_manager
+            .loaded_chunks()
+            .map(|chunk| {
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!(
+                        "chunk_bind_group_{}_{}",
+                        chunk.coord.x, chunk.coord.z
+                    )),
+                    layout: &chunk_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&rt_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: chunk.buffers.params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: camera_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: chunk.buffers.nodes.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: chunk.buffers.leaf_data.as_entire_binding(),
+                        },
+                    ],
+                });
+                (chunk.coord, bg)
+            })
+            .collect();
 
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("tree64_pipeline_layout"),
-                bind_group_layouts: &[Some(&tree_bind_group_layout)],
+                bind_group_layouts: &[Some(&chunk_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -297,7 +338,7 @@ impl App {
 
         App {
             compute_pipeline,
-            tree_bind_group,
+            chunk_bind_groups,
             camera_buffer,
             player_controller,
             blit_pipeline,
@@ -307,11 +348,9 @@ impl App {
             surface_width: width,
             surface_height: height,
             rt_texture,
-            tree_bind_group_layout,
+            chunk_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
-            tree_params_buffer: tree_buffers.params,
-            tree_nodes_buffer: tree_buffers.nodes,
-            tree_leaf_data_buffer: tree_buffers.leaf_data,
+            chunk_manager,
         }
     }
 
@@ -353,32 +392,43 @@ impl App {
             ..Default::default()
         });
 
-        self.tree_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tree64_bind_group"),
-            layout: &self.tree_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.tree_params_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.tree_nodes_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: self.tree_leaf_data_buffer.as_entire_binding(),
-                },
-            ],
-        });
+        // Rebuild all chunk bind groups with the new render target view
+        self.chunk_bind_groups = self
+            .chunk_manager
+            .loaded_chunks()
+            .map(|chunk| {
+                let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some(&format!(
+                        "chunk_bind_group_{}_{}",
+                        chunk.coord.x, chunk.coord.z
+                    )),
+                    layout: &self.chunk_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&rt_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: chunk.buffers.params.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: self.camera_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: chunk.buffers.nodes.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: chunk.buffers.leaf_data.as_entire_binding(),
+                        },
+                    ],
+                });
+                (chunk.coord, bg)
+            })
+            .collect();
 
         self.blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit_view"),
@@ -436,17 +486,18 @@ impl App {
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("tree64_compute_pass"),
-                timestamp_writes: None,
-            });
-
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.set_bind_group(0, &self.tree_bind_group, &[]);
-
             let workgroup_x = self.surface_width.div_ceil(8);
             let workgroup_y = self.surface_height.div_ceil(8);
-            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+
+            for (_coord, bind_group) in &self.chunk_bind_groups {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("tree64_compute_pass"),
+                    timestamp_writes: None,
+                });
+                cpass.set_pipeline(&self.compute_pipeline);
+                cpass.set_bind_group(0, bind_group, &[]);
+                cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
+            }
         }
 
         {
