@@ -1,7 +1,7 @@
 use core::f32;
 use std::{
     collections::HashSet,
-    f32::consts::{self, FRAC_PI_2, TAU},
+    f32::consts::{FRAC_PI_2, TAU},
     time::Duration,
 };
 
@@ -24,23 +24,21 @@ pub struct PlayerController {
     yaw: f32,
     pitch: f32,
 
-    proj: Mat4,
     view: Mat4,
     needs_view_update: bool,
 }
 
 impl Default for PlayerController {
     fn default() -> Self {
-        let translation = Vec3::new(-16.0, 32.0, -16.0);
+        let translation = Vec3::new(32.0, 32.0, 80.0);
 
         Self {
-            speed: 64.0,
+            speed: 32.0,
             sensitivity: 0.001,
             translation,
             yaw: 0.0,
             pitch: 0.0,
-            proj: glam::Mat4::perspective_rh(consts::FRAC_PI_4, 16. / 9., 1.0, 100.0),
-            view: Mat4::IDENTITY,
+            view: glam::Mat4::look_at_rh(translation, Vec3::new(32.0, 16.0, 32.0), Vec3::Y),
             needs_view_update: true,
         }
     }
@@ -49,14 +47,6 @@ impl Default for PlayerController {
 impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
-
-    pub fn view_proj(&mut self) -> Mat4 {
-        if self.needs_view_update {
-            self.compute_view();
-        }
-
-        self.proj * self.view
-    }
 
     pub fn view(&mut self) -> Mat4 {
         if self.needs_view_update {
@@ -85,9 +75,9 @@ impl PlayerController {
             velocity -= right;
         }
         if keys.contains(&UP) {
-            velocity -= Vec3::Y;
-        } else if keys.contains(&CONTROL) {
             velocity += Vec3::Y;
+        } else if keys.contains(&CONTROL) {
+            velocity -= Vec3::Y;
         }
 
         velocity = velocity.normalize_or_zero();
@@ -99,7 +89,7 @@ impl PlayerController {
 
     pub fn rotate(&mut self, delta: (f64, f64)) {
         self.yaw -= (delta.0 * self.sensitivity) as f32;
-        self.pitch += (delta.1 * self.sensitivity) as f32;
+        self.pitch -= (delta.1 * self.sensitivity) as f32;
 
         self.yaw = self.yaw.rem_euclid(TAU);
 
@@ -120,7 +110,7 @@ impl PlayerController {
         let forward = rot * Vec3::new(0.0, 0.0, -1.0);
         let up = rot * Vec3::new(0.0, 1.0, 0.0);
 
-        self.view = Mat4::look_at_rh(self.translation, glam::Vec3::ZERO, glam::Vec3::Z);
+        self.view = Mat4::look_at_rh(self.translation, self.translation + forward, up);
     }
 
     pub fn handle_speed_change(&mut self, y_delta: f32) {

@@ -1,7 +1,7 @@
 mod app;
-mod brickmap;
 mod framework;
 mod player_controller;
+mod tree64_renderer;
 mod utils;
 mod world;
 

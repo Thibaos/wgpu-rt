@@ -1,104 +1,53 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::f32::consts::{self};
 use std::time::{Duration, Instant};
-use std::u32;
 
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3, Vec4};
-use wgpu::util::{BufferInitDescriptor, DeviceExt};
+use wgpu::util::DeviceExt;
 
-use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages, TextureView};
+use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
+use crate::world;
 
+/// Camera uniforms passed to the compute shader.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniforms {
-    view_inverse: Mat4,
-    proj_inverse: Mat4,
-    palette: [Vec4; 256],
+struct CameraUniforms {
+    pos: [f32; 4],
+    view_inv: [[f32; 4]; 4],
+    proj_inv: [[f32; 4]; 4],
 }
 
 pub struct App {
-    rt_view: TextureView,
-    vertex_buf: wgpu::Buffer,
-    vertex_count: usize,
-    // index_buf: wgpu::Buffer,
-    camera_pos_buffer: wgpu::Buffer,
-    camera_view_proj_buffer: wgpu::Buffer,
-    // index_count: usize,
-    pipeline: wgpu::RenderPipeline,
-    blit_pipeline: wgpu::RenderPipeline,
-    nodes_bind_group: wgpu::BindGroup,
-    camera_bind_group: wgpu::BindGroup,
-    blit_view_bind_group: wgpu::BindGroup,
+    // Compute pipeline
+    compute_pipeline: wgpu::ComputePipeline,
+    tree_bind_group: wgpu::BindGroup,
+
+    // Camera
+    camera_buffer: wgpu::Buffer,
     pub player_controller: PlayerController,
+
+    // Blit pass
+    blit_pipeline: wgpu::RenderPipeline,
+    blit_view_bind_group: wgpu::BindGroup,
+
+    // Timing
     last_frame_update: Instant,
     delta_time: Duration,
-}
 
-#[derive(Clone, Copy, Zeroable, Pod)]
-#[repr(C)]
-struct AABB {
-    // world-space min corner of the AABB
-    aabb_min: Vec3,
-    // the scale of the node represented by the AABB
-    // octants internally are half this scale value
-    // max corner is `min + vec3<f32>(scale)`
-    scale: f32,
-    // 2x2x2 occupancy bitmap of the child nodes of an octree (only 8 of 32 bits used)
-    // NOTE 4x4x4 fits perfectly in vec2<u32> and is likely better performance overall
-    octants: u32,
-    _pad: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Vertex {
-    _pos: [f32; 4],
-    _color_index: u32,
-}
-
-const fn vertex(pos: [i8; 3]) -> Vertex {
-    Vertex {
-        _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
-        _color_index: 1,
-    }
-}
-
-fn create_vertices() -> (Vec<Vertex>, usize) {
-    const NNN: Vertex = vertex([0, 0, 0]);
-    const PNN: Vertex = vertex([1, 0, 0]);
-    const NNP: Vertex = vertex([0, 0, 1]);
-    const PNP: Vertex = vertex([1, 0, 1]);
-    const NPN: Vertex = vertex([0, 1, 0]);
-    const NPP: Vertex = vertex([0, 1, 1]);
-    const PPN: Vertex = vertex([1, 1, 0]);
-    const PPP: Vertex = vertex([1, 1, 1]);
-
-    let vertex_data = [
-        NNN, PNN, NNP, PNP, PPP, PNN, PPN, NNN, NPN, NNP, NPP, PPP, NPN, PPN,
-    ];
-
-    (vertex_data.to_vec(), vertex_data.len())
-}
-
-const CAMERA_POS: glam::Vec3 = glam::Vec3::new(1.5f32, -5.0, 3.0);
-
-fn generate_matrix(aspect_ratio: f32) -> glam::Mat4 {
-    let projection = glam::Mat4::perspective_rh(consts::FRAC_PI_4, aspect_ratio, 1.0, 10.0);
-    let view = glam::Mat4::look_at_rh(CAMERA_POS, glam::Vec3::ZERO, glam::Vec3::Z);
-    projection * view
+    // Surface size for projection
+    surface_width: u32,
+    surface_height: u32,
 }
 
 impl App {
     pub const SRGB: bool = true;
 
     pub fn required_features() -> wgpu::Features {
-        wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::VERTEX_WRITABLE_STORAGE
+        wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SHADER_INT64
     }
 
     pub fn optional_features() -> wgpu::Features {
@@ -113,7 +62,7 @@ impl App {
     }
 
     pub fn required_limits() -> wgpu::Limits {
-        wgpu::Limits::default().using_minimum_supported_acceleration_structure_values()
+        wgpu::Limits::default()
     }
 
     pub fn init(
@@ -121,206 +70,188 @@ impl App {
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
     ) -> Self {
-        const FORMAT: TextureFormat = TextureFormat::R32Uint;
+        let width = config.width;
+        let height = config.height;
+        let format = TextureFormat::Rgba8Unorm;
 
-        let render_target = device.create_texture(&TextureDescriptor {
-            label: Some("vertex_target"),
+        // Create ray tracing output texture
+        let rt_texture = device.create_texture(&TextureDescriptor {
+            label: Some("rt_output"),
             size: Extent3d {
-                width: config.width,
-                height: config.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: FORMAT,
-            usage: TextureUsages::RENDER_ATTACHMENT
+            format,
+            usage: TextureUsages::STORAGE_BINDING
                 | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::STORAGE_BINDING,
-            view_formats: &[FORMAT],
+                | TextureUsages::COPY_SRC,
+            view_formats: &[format],
         });
 
-        let rt_view = render_target.create_view(&wgpu::TextureViewDescriptor {
+        let rt_view = rt_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("rt_view"),
-            format: Some(FORMAT),
+            format: Some(format),
             dimension: Some(wgpu::TextureViewDimension::D2),
-            usage: Some(TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING),
-            aspect: wgpu::TextureAspect::All,
-            base_mip_level: 0,
-            mip_level_count: None,
-            base_array_layer: 0,
-            array_layer_count: None,
+            ..Default::default()
         });
 
-        let vertex_size = size_of::<Vertex>();
-        let (vertex_data, vertex_count) = create_vertices();
+        // Build Tree64 from procedural terrain
+        let gpu_tree = world::build_tree64();
+        log::info!(
+            "Tree64 built: {} nodes, {} bytes of leaf data, tree_scale={}",
+            gpu_tree.nodes.len(),
+            gpu_tree.leaf_data.len(),
+            gpu_tree.tree_scale
+        );
 
-        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("vertex_buffer"),
-            contents: bytemuck::cast_slice(&vertex_data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let tree_buffers = gpu_tree.create_buffers(device);
 
-        // let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        //     label: Some("index_buffer"),
-        //     contents: bytemuck::cast_slice(&index_data),
-        //     usage: wgpu::BufferUsages::INDEX,
-        // });
-
-        let vertex_buffers = [wgpu::VertexBufferLayout {
-            array_stride: vertex_size as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Uint32,
-                    offset: 0,
-                    shader_location: 1,
-                },
+        // Camera buffer
+        let aspect = width as f32 / height as f32;
+        let mut player_controller = PlayerController::default();
+        let camera_uniforms = CameraUniforms {
+            pos: [
+                player_controller.translation.x,
+                player_controller.translation.y,
+                player_controller.translation.z,
+                1.0,
             ],
-        }];
+            view_inv: player_controller.view().inverse().to_cols_array_2d(),
+            proj_inv: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0)
+                .inverse()
+                .to_cols_array_2d(),
+        };
 
-        let nodes = [AABB {
-            aabb_min: Vec3::NEG_ONE,
-            octants: u32::MAX,
-            scale: 2.0,
-            _pad: [0.0; 3],
-        }];
-
-        let nodes_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("nodes_buffer"),
-            contents: bytemuck::cast_slice(&nodes),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let mx_total = generate_matrix(config.width as f32 / config.height as f32);
-        let mx_ref = mx_total.as_ref();
-
-        let camera_pos_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("camera_pos_buffer"),
-            contents: bytemuck::bytes_of(&CAMERA_POS),
+        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("camera_uniforms"),
+            contents: bytemuck::bytes_of(&camera_uniforms),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let camera_view_proj_buffer = device.create_buffer_init(&BufferInitDescriptor {
-            label: Some("camera_view_proj_buffer"),
-            contents: bytemuck::cast_slice(mx_ref),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("vertex_shader"),
+        // Compute shader
+        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("tree64_raycast"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/vertex_rt.wgsl"
+                "../assets/shaders/tree64_compiled.wgsl"
             ))),
         });
 
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("blit_shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/blit.wgsl"
-            ))),
-        });
-
-        let nodes_bind_group_layout =
+        // Bind group layout
+        let tree_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("nodes_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(32),
-                    },
-                    count: None,
-                }],
-            });
-
-        let nodes_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("nodes_group"),
-            layout: &nodes_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: nodes_buffer.as_entire_binding(),
-            }],
-        });
-
-        let camera_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("camera_layout"),
+                label: Some("tree64_bind_layout"),
                 entries: &[
+                    // binding 0: output texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::VERTEX,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(12),
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format,
+                            view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
                     },
+                    // binding 1: tree params
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
-                        visibility: wgpu::ShaderStages::VERTEX,
+                        visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(64),
+                            min_binding_size: wgpu::BufferSize::new(32),
+                        },
+                        count: None,
+                    },
+                    // binding 2: camera
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 3: tree nodes (storage)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // binding 4: leaf data (storage)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
                 ],
             });
 
-        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("camera_group"),
-            layout: &camera_bind_group_layout,
+        let tree_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tree64_bind_group"),
+            layout: &tree_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: camera_pos_buffer.as_entire_binding(),
+                    resource: wgpu::BindingResource::TextureView(&rt_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: camera_view_proj_buffer.as_entire_binding(),
+                    resource: tree_buffers.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: tree_buffers.nodes.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: tree_buffers.leaf_data.as_entire_binding(),
                 },
             ],
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("vertex_pipeline_layout"),
-            bind_group_layouts: &[&nodes_bind_group_layout, &camera_bind_group_layout],
-            immediate_size: 0,
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("tree64_pipeline_layout"),
+                bind_group_layouts: &[&tree_bind_group_layout],
+                immediate_size: 0,
+            });
+
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("tree64_compute_pipeline"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("vertex_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex"),
-                compilation_options: Default::default(),
-                buffers: &vertex_buffers,
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment"),
-                compilation_options: Default::default(),
-                targets: &[Some(FORMAT.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
+        // Blit shader
+        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("blit_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
+                "../assets/shaders/blit.wgsl"
+            ))),
         });
 
         let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -358,31 +289,23 @@ impl App {
             }],
         });
 
-        let player_controller = PlayerController::default();
-
         App {
-            rt_view,
-            vertex_buf,
-            vertex_count,
-            // index_buf,
-            camera_pos_buffer,
-            camera_view_proj_buffer,
-            // index_count: index_data.len(),
-            pipeline,
-            blit_pipeline,
-            nodes_bind_group,
-            camera_bind_group,
-            blit_view_bind_group,
+            compute_pipeline,
+            tree_bind_group,
+            camera_buffer,
             player_controller,
+            blit_pipeline,
+            blit_view_bind_group,
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
+            surface_width: width,
+            surface_height: height,
         }
     }
 
     fn update_delta_time(&mut self) {
         let now = Instant::now();
         let delta = now.duration_since(self.last_frame_update);
-
         self.last_frame_update = now;
         self.delta_time = delta;
     }
@@ -391,10 +314,12 @@ impl App {
 
     pub fn resize(
         &mut self,
-        _config: &wgpu::SurfaceConfiguration,
+        config: &wgpu::SurfaceConfiguration,
         _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
+        self.surface_width = config.width;
+        self.surface_height = config.height;
     }
 
     pub fn render(
@@ -405,55 +330,44 @@ impl App {
         keys: &HashSet<Key<SmolStr>>,
     ) {
         self.update_delta_time();
-
         self.player_controller.fly_movement(self.delta_time, keys);
 
-        let mx_total = self.player_controller.view_proj();
-        let mx_ref = mx_total.as_ref();
+        // Update camera uniforms
+        let aspect = self.surface_width as f32 / self.surface_height as f32;
+        let camera_uniforms = CameraUniforms {
+            pos: [
+                self.player_controller.translation.x,
+                self.player_controller.translation.y,
+                self.player_controller.translation.z,
+                1.0,
+            ],
+            view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
+            proj_inv: glam::Mat4::perspective_rh(std::f32::consts::FRAC_PI_4, aspect, 0.1, 10000.0)
+                .inverse()
+                .to_cols_array_2d(),
+        };
 
-        queue.write_buffer(
-            &self.camera_view_proj_buffer,
-            0,
-            bytemuck::cast_slice(mx_ref),
-        );
+        queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniforms));
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
+        // Compute pass: ray trace the Tree64
         {
-            let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("vertex_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.rt_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("tree64_compute_pass"),
                 timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
             });
 
-            rpass.push_debug_group("Prepare data for draw");
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.set_bind_group(0, &self.tree_bind_group, &[]);
 
-            rpass.set_pipeline(&self.pipeline);
-            rpass.set_bind_group(0, Some(&self.nodes_bind_group), &[]);
-            rpass.set_bind_group(1, Some(&self.camera_bind_group), &[]);
-
-            // rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
-            rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
-
-            rpass.pop_debug_group();
-
-            rpass.insert_debug_marker("draw");
-            // rpass.draw_indexed(0..self.index_count as u32, 0, 0..1);
-            rpass.draw(0..self.vertex_count as u32, 0..1);
+            let workgroup_x = self.surface_width.div_ceil(8);
+            let workgroup_y = self.surface_height.div_ceil(8);
+            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
         }
 
+        // Render pass: blit to screen
         {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("blit_pass"),

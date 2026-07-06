@@ -306,36 +306,26 @@ async fn start() {
                             },
                         ..
                     } => {
-                        match logical_key {
-                            Key::Named(named_key) => {
-                                if named_key == NamedKey::Escape
-                                    && !window_loop
-                                        .pressed_keys
-                                        .contains(&Key::Named(NamedKey::Escape))
-                                {
-                                    match window_loop.cursor_grab_mode {
-                                        CursorGrabMode::None => {
-                                            let new_grab_mode = CursorGrabMode::Confined;
-                                            window_loop.cursor_grab_mode = new_grab_mode;
-                                            window_loop
-                                                .window
-                                                .set_cursor_grab(new_grab_mode)
-                                                .unwrap();
-                                            window_loop.window.set_cursor_visible(false);
-                                        }
-                                        _ => {
-                                            let new_grab_mode = CursorGrabMode::None;
-                                            window_loop.cursor_grab_mode = new_grab_mode;
-                                            window_loop
-                                                .window
-                                                .set_cursor_grab(new_grab_mode)
-                                                .unwrap();
-                                            window_loop.window.set_cursor_visible(true);
-                                        }
-                                    }
+                        if let Key::Named(named_key) = logical_key
+                            && named_key == NamedKey::Escape
+                            && !window_loop
+                                .pressed_keys
+                                .contains(&Key::Named(NamedKey::Escape))
+                        {
+                            match window_loop.cursor_grab_mode {
+                                CursorGrabMode::None => {
+                                    let new_grab_mode = CursorGrabMode::Confined;
+                                    window_loop.cursor_grab_mode = new_grab_mode;
+                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
+                                    window_loop.window.set_cursor_visible(false);
+                                }
+                                _ => {
+                                    let new_grab_mode = CursorGrabMode::None;
+                                    window_loop.cursor_grab_mode = new_grab_mode;
+                                    window_loop.window.set_cursor_grab(new_grab_mode).unwrap();
+                                    window_loop.window.set_cursor_visible(true);
                                 }
                             }
-                            _ => {}
                         }
 
                         window_loop.pressed_keys.insert(logical_key);
@@ -396,10 +386,10 @@ async fn start() {
                                     app.update_look_position(delta);
                                 }
                             }
-                            DeviceEvent::MouseWheel { delta } => {
-                                if let MouseScrollDelta::LineDelta(_, y_delta) = delta {
-                                    app.player_controller.handle_speed_change(y_delta);
-                                }
+                            DeviceEvent::MouseWheel {
+                                delta: MouseScrollDelta::LineDelta(_, y_delta),
+                            } => {
+                                app.player_controller.handle_speed_change(y_delta);
                             }
                             _ => {}
                         }

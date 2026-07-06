@@ -42,10 +42,10 @@ pub(crate) async fn get_adapter_with_capabilities_or_from_env(
 
         let mut chosen_adapter = None;
         for adapter in adapters {
-            if let Some(surface) = surface {
-                if !adapter.is_surface_supported(surface) {
-                    continue;
-                }
+            if let Some(surface) = surface
+                && !adapter.is_surface_supported(surface)
+            {
+                continue;
             }
 
             let required_features = *required_features;
