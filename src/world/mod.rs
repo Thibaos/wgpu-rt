@@ -1,3 +1,5 @@
+pub mod chunk_manager;
+
 use tree64::VoxelModel;
 
 use crate::tree64_renderer::GpuTree64;
