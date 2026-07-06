@@ -33,7 +33,9 @@ fn main() {
     let model_size = model.size;
     eprintln!(
         "Model: {}x{}x{} voxels, {} voxels total",
-        model_size.x, model_size.y, model_size.z,
+        model_size.x,
+        model_size.y,
+        model_size.z,
         model.voxels.len()
     );
 
@@ -63,14 +65,19 @@ fn main() {
                 // Clips to source model bounds internally.
                 let chunk_model = ChunkVoxelModel::new(
                     model,
-                    chunk_x_min, chunk_y_min, chunk_z_min,
+                    chunk_x_min,
+                    chunk_y_min,
+                    chunk_z_min,
                     wgpu_rt::formats::CHUNK_VOXEL_X,
                     wgpu_rt::formats::CHUNK_VOXEL_Y,
                     wgpu_rt::formats::CHUNK_VOXEL_Z,
                 );
 
                 // Skip chunks that have no overlap with the source model
-                if chunk_model.chunk_size_x == 0 || chunk_model.chunk_size_y == 0 || chunk_model.chunk_size_z == 0 {
+                if chunk_model.chunk_size_x == 0
+                    || chunk_model.chunk_size_y == 0
+                    || chunk_model.chunk_size_z == 0
+                {
                     continue;
                 }
 
@@ -87,7 +94,9 @@ fn main() {
                 // Convert to GpuTree64 and store
                 let gpu_tree = wgpu_rt::tree64_renderer::GpuTree64::from_tree64(&tree);
                 let index = wgpu_rt::formats::ChunkTable::chunk_index(
-                    cx, cy, cz,
+                    cx,
+                    cy,
+                    cz,
                     wgpu_rt::formats::CHUNK_COUNT_X,
                 );
 
@@ -96,7 +105,9 @@ fn main() {
 
                 eprintln!(
                     "  Chunk ({}, {}, {}): {} nodes, {} bytes leaf data",
-                    cx, cy, cz,
+                    cx,
+                    cy,
+                    cz,
                     tree.nodes.len(),
                     tree.data.len(),
                 );
@@ -109,7 +120,9 @@ fn main() {
     // Write world file
     let out_file = File::create(output_path).expect("failed to create output file");
     let writer = BufWriter::new(out_file);
-    world_file.write(writer).expect("failed to write world file");
+    world_file
+        .write(writer)
+        .expect("failed to write world file");
 
     eprintln!("Done: {} written", output_path);
 }
@@ -130,8 +143,15 @@ struct ChunkVoxelModel<'a> {
 }
 
 impl<'a> ChunkVoxelModel<'a> {
-    fn new(source: &'a dot_vox::Model, offset_x: u32, offset_y: u32, offset_z: u32,
-           chunk_size_x: u32, chunk_size_y: u32, chunk_size_z: u32) -> Self {
+    fn new(
+        source: &'a dot_vox::Model,
+        offset_x: u32,
+        offset_y: u32,
+        offset_z: u32,
+        chunk_size_x: u32,
+        chunk_size_y: u32,
+        chunk_size_z: u32,
+    ) -> Self {
         let mut voxel_map: HashMap<(u8, u8, u8), u8> = HashMap::new();
         for v in &source.voxels {
             voxel_map.insert((v.x, v.y, v.z), v.i);
@@ -149,7 +169,9 @@ impl<'a> ChunkVoxelModel<'a> {
         Self {
             source_size: &source.size,
             voxel_map,
-            offset_x, offset_y, offset_z,
+            offset_x,
+            offset_y,
+            offset_z,
             chunk_size_x: clipped_w,
             chunk_size_y: clipped_h,
             chunk_size_z: clipped_d,
@@ -180,6 +202,8 @@ impl<'a> tree64::VoxelModel<u8> for &'a ChunkVoxelModel<'a> {
             return None;
         }
 
-        self.voxel_map.get(&(global_x as u8, global_y as u8, global_z as u8)).copied()
+        self.voxel_map
+            .get(&(global_x as u8, global_y as u8, global_z as u8))
+            .copied()
     }
 }

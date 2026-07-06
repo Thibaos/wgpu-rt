@@ -10,12 +10,14 @@ honor its STOP conditions, and update your row when done.
 |------|-------|----------|--------|------------|--------|
 | 001  | Recreate RT output texture on window resize | P1 | M | — | DONE |
 | 002  | Handle surface acquire timeout and outdated gracefully | P1 | S | — | DONE |
+| 003  | Chunked world architecture — binary format, bake tool, multi-chunk rendering | P1 | L | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
 
 - 001 and 002 were independent — they touch different files (`src/app.rs` vs `src/framework.rs`).
+- 003 has no dependencies on other plans.
 
 ## Findings considered and rejected
 

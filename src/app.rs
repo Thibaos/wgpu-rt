@@ -11,8 +11,8 @@ use winit::keyboard::{Key, SmolStr};
 
 use crate::formats::{CHUNK_COUNT_X, CHUNK_COUNT_Z};
 use crate::player_controller::PlayerController;
-use crate::world::chunk_manager::{ChunkCoord, ChunkManager};
 use crate::world::World;
+use crate::world::chunk_manager::{ChunkCoord, ChunkManager};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -118,8 +118,7 @@ impl App {
             .join("world.world");
 
         let (_world, chunk_manager) = if world_path.exists() {
-            let world = World::load(&world_path)
-                .expect("failed to load world file");
+            let world = World::load(&world_path).expect("failed to load world file");
             let mut chunk_manager = ChunkManager::new();
             for cz in 0..world.chunk_count_z {
                 for cx in 0..world.chunk_count_x {

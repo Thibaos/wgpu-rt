@@ -24,8 +24,8 @@ impl World {
         let file = File::open(path.as_ref())
             .map_err(|e| format!("failed to open world file {}: {e}", path.as_ref().display()))?;
         let mut reader = BufReader::new(file);
-        let world_file = WorldFile::read(&mut reader)
-            .map_err(|e| format!("failed to read world file: {e}"))?;
+        let world_file =
+            WorldFile::read(&mut reader).map_err(|e| format!("failed to read world file: {e}"))?;
 
         let total = world_file.header.total_chunks() as usize;
         let mut chunks: Vec<Option<GpuTree64>> = Vec::with_capacity(total);

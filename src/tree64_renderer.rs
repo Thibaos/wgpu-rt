@@ -183,11 +183,14 @@ impl GpuTree64 {
         let mut _node_bytes_sanity = [0u8; 4];
         reader.read_exact(&mut _node_bytes_sanity)?;
 
-        let mut nodes: Vec<GpuNode> = vec![GpuNode {
-            packed_data: 0,
-            pop_mask_lo: 0,
-            pop_mask_hi: 0,
-        }; node_count as usize];
+        let mut nodes: Vec<GpuNode> = vec![
+            GpuNode {
+                packed_data: 0,
+                pop_mask_lo: 0,
+                pop_mask_hi: 0,
+            };
+            node_count as usize
+        ];
         reader.read_exact(bytemuck::cast_slice_mut(&mut nodes))?;
 
         let mut leaf_count_bytes = [0u8; 4];
