@@ -40,6 +40,18 @@ pub struct App {
     // Surface size for projection
     surface_width: u32,
     surface_height: u32,
+
+    // RT output texture (recreated on resize)
+    rt_texture: wgpu::Texture,
+
+    // Layouts (reused for bind-group recreation on resize)
+    tree_bind_group_layout: wgpu::BindGroupLayout,
+    blit_bind_group_layout: wgpu::BindGroupLayout,
+
+    // Tree buffers (needed for bind-group recreation on resize)
+    tree_params_buffer: wgpu::Buffer,
+    tree_nodes_buffer: wgpu::Buffer,
+    tree_leaf_data_buffer: wgpu::Buffer,
 }
 
 impl App {
@@ -294,6 +306,12 @@ impl App {
             delta_time: Duration::default(),
             surface_width: width,
             surface_height: height,
+            rt_texture,
+            tree_bind_group_layout,
+            blit_bind_group_layout: blit_view_bind_group_layout,
+            tree_params_buffer: tree_buffers.params,
+            tree_nodes_buffer: tree_buffers.nodes,
+            tree_leaf_data_buffer: tree_buffers.leaf_data,
         }
     }
 
@@ -306,14 +324,81 @@ impl App {
 
     pub fn update(&mut self, _event: WindowEvent) {}
 
+    fn recreate_render_target(&mut self, device: &wgpu::Device) {
+        let format = wgpu::TextureFormat::Rgba8Unorm;
+        let width = self.surface_width;
+        let height = self.surface_height;
+
+        self.rt_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("rt_output"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[format],
+        });
+
+        let rt_view = self.rt_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("rt_view"),
+            format: Some(format),
+            dimension: Some(wgpu::TextureViewDimension::D2),
+            ..Default::default()
+        });
+
+        self.tree_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tree64_bind_group"),
+            layout: &self.tree_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&rt_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.tree_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.tree_nodes_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: self.tree_leaf_data_buffer.as_entire_binding(),
+                },
+            ],
+        });
+
+        self.blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("blit_view"),
+            layout: &self.blit_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&rt_view),
+            }],
+        });
+    }
+
     pub fn resize(
         &mut self,
         config: &wgpu::SurfaceConfiguration,
-        _device: &wgpu::Device,
+        device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
         self.surface_width = config.width;
         self.surface_height = config.height;
+        self.recreate_render_target(device);
     }
 
     pub fn render(
