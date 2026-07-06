@@ -41,14 +41,46 @@ impl SurfaceWrapper {
         surface.configure(&context.device, config);
     }
 
-    fn acquire(&mut self, context: &RenderContext) -> wgpu::SurfaceTexture {
+    fn acquire(&mut self, context: &RenderContext) -> Option<wgpu::SurfaceTexture> {
         let surface = self.surface.as_ref().unwrap();
+        let config = self.config();
 
+        // Try up to 3 times for transient Timeout
+        for attempt in 0..3 {
+            match surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(frame) => return Some(frame),
+                wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                    log::warn!("Surface acquire returned suboptimal frame");
+                    return Some(frame);
+                }
+                wgpu::CurrentSurfaceTexture::Timeout => {
+                    log::warn!(
+                        "Surface acquire timed out (attempt {}/3), retrying...",
+                        attempt + 1
+                    );
+                    // Brief yield to let the GPU pipeline drain
+                    std::thread::yield_now();
+                }
+                wgpu::CurrentSurfaceTexture::Outdated => {
+                    log::info!("Surface outdated, reconfiguring...");
+                    surface.configure(&context.device, config);
+                    // After reconfiguration, retry once
+                    break;
+                }
+                _ => {
+                    log::error!("Surface acquire failed (attempt {}/3), retrying...", attempt + 1);
+                    std::thread::yield_now();
+                }
+            }
+        }
+
+        // Final attempt: reconfigure and try one more time
+        surface.configure(&context.device, config);
         match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
             _ => {
-                surface.configure(&context.device, self.config());
-                panic!("Failed to acquire next surface texture!");
+                log::error!("Failed to acquire surface texture after reconfiguration");
+                None
             }
         }
     }
