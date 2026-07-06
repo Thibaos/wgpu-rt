@@ -45,7 +45,6 @@ impl SurfaceWrapper {
         let surface = self.surface.as_ref().unwrap();
         let config = self.config();
 
-        // Try up to 3 times for transient Timeout
         for attempt in 0..3 {
             match surface.get_current_texture() {
                 wgpu::CurrentSurfaceTexture::Success(frame) => return Some(frame),
@@ -58,13 +57,11 @@ impl SurfaceWrapper {
                         "Surface acquire timed out (attempt {}/3), retrying...",
                         attempt + 1
                     );
-                    // Brief yield to let the GPU pipeline drain
                     std::thread::yield_now();
                 }
                 wgpu::CurrentSurfaceTexture::Outdated => {
                     log::info!("Surface outdated, reconfiguring...");
                     surface.configure(&context.device, config);
-                    // After reconfiguration, retry once
                     break;
                 }
                 _ => {

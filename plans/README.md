@@ -8,18 +8,19 @@ honor its STOP conditions, and update your row when done.
 
 | Plan | Title | Priority | Effort | Depends on | Status |
 |------|-------|----------|--------|------------|--------|
-| 001  | Recreate RT output texture on window resize | P1 | M | — | TODO |
-| 002  | Handle surface acquire timeout and outdated gracefully | P1 | S | — | TODO |
+| 001  | Recreate RT output texture on window resize | P1 | M | — | DONE |
+| 002  | Handle surface acquire timeout and outdated gracefully | P1 | S | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
 
-- 001 and 002 are independent — they touch different files (`src/app.rs` vs `src/framework.rs`). Execute in any order.
+- 001 and 002 were independent — they touch different files (`src/app.rs` vs `src/framework.rs`).
 
 ## Findings considered and rejected
 
-(None yet — only plans 001 and 002 were requested.)
+- **#9 (Clippy: collapsible-if in framework.rs)**: Fixed in commit `40eee8d` — clippy passes with `-D warnings` at HEAD.
+- **#10 (cargo fmt diff in tree64_renderer.rs)**: Fixed in commit `40eee8d` — `cargo fmt --check` passes at HEAD.
 
 ## Remaining findings (not yet planned)
 
@@ -31,5 +32,3 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | 6  | No README | Docs | P3 |
 | 7  | Unused VoxelRT shader files | Tech Debt | P3 |
 | 8  | Fragile string replace in build.rs | Tech Debt | P3 |
-| 9  | Clippy: collapsible-if in framework.rs | Tech Debt | P3 |
-| 10 | `cargo fmt` diff in tree64_renderer.rs | Tech Debt | P3 |
