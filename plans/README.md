@@ -11,6 +11,7 @@ honor its STOP conditions, and update your row when done.
 | 001  | Recreate RT output texture on window resize | P1 | M | — | DONE |
 | 002  | Handle surface acquire timeout and outdated gracefully | P1 | S | — | DONE |
 | 003  | Chunked world architecture — binary format, bake tool, multi-chunk rendering | P1 | L | — | DONE |
+| 004  | Add color palette from .vox file to .world format and GPU rendering | P1 | M | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -23,6 +24,10 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 - **#9 (Clippy: collapsible-if in framework.rs)**: Fixed in commit `40eee8d` — clippy passes with `-D warnings` at HEAD.
 - **#10 (cargo fmt diff in tree64_renderer.rs)**: Fixed in commit `40eee8d` — `cargo fmt --check` passes at HEAD.
+
+## Dependency notes
+
+- 004 has no dependencies on other plans — 003 is already DONE.
 
 ## Remaining findings (not yet planned)
 
