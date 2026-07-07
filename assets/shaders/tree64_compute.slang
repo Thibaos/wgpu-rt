@@ -60,17 +60,22 @@ void main(uint3 globalId: SV_DispatchThreadID) {
   float4 target = mul(projInv, float4(ndc.x, ndc.y, 1, 1));
   float3 rayDir = normalize(mul(viewInv, float4(normalize(target.xyz), 0)).xyz);
 
+  // Swap Y↔Z to match Z-up tree traversal convention (VoxelRT)
+  rayOrigin = float3(rayOrigin.x, rayOrigin.z, rayOrigin.y);
+  rayDir = float3(rayDir.x, rayDir.z, rayDir.y);
+
   int3 worldOrigin = int3(floor(rayOrigin)) - rootOffset;
   float3 localPos = frac(rayOrigin);
 
   // Use the Traversal_OctMirror directly (adapted from tree64.slang)
   HitInfo hit = Tree64RayCast(worldOrigin, localPos, rayDir);
 
-  float4 color = float4(0, 0, 0, 1);
+  float4 color = float4(rayDir.x, rayDir.y, rayDir.z, 1);
   if (any(hit.Normal != float3(0, 0, 0))) {
+    float3 normal = float3(hit.Normal.x, hit.Normal.z, hit.Normal.y); // swap back to Y-up
     float3 matColor = palette[hit.MaterialId].rgb;
     float3 lightDir = normalize(float3(0.5, 1.0, 0.3));
-    float ndotl = max(dot(hit.Normal, lightDir), 0.1);
+    float ndotl = max(dot(normal, lightDir), 0.1);
     color = float4(matColor * ndotl, 1);
   }
 
