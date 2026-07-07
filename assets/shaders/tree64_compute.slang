@@ -43,11 +43,6 @@ StructuredBuffer<uint> leafData;
 [[vk::binding(5, 0)]]
 StructuredBuffer<float4> palette;
 
-// Stub: the original Traversal_OctMirror accesses TreeNodes via a pointer.
-// We need to adapt: wrap our storage buffers into a VoxelMap that the Slang
-// traversal can use. The original VoxelMap has `Node* TreeNodes` — a raw
-// pointer. Since we use storage buffers, we'll implement RayCast manually.
-
 [numthreads(8, 8, 1)]
 void main(uint3 globalId: SV_DispatchThreadID) {
   float2 targetSize;
@@ -60,19 +55,17 @@ void main(uint3 globalId: SV_DispatchThreadID) {
   float4 target = mul(projInv, float4(ndc.x, ndc.y, 1, 1));
   float3 rayDir = normalize(mul(viewInv, float4(normalize(target.xyz), 0)).xyz);
 
-  // Swap Y↔Z to match Z-up tree traversal convention (VoxelRT)
-  rayOrigin = float3(rayOrigin.x, rayOrigin.z, rayOrigin.y);
-  rayDir = float3(rayDir.x, rayDir.z, rayDir.y);
+  rayOrigin = float3(rayOrigin.x, -rayOrigin.z, rayOrigin.y);
+  rayDir = float3(rayDir.x, -rayDir.z, rayDir.y);
 
   int3 worldOrigin = int3(floor(rayOrigin)) - rootOffset;
   float3 localPos = frac(rayOrigin);
 
-  // Use the Traversal_OctMirror directly (adapted from tree64.slang)
   HitInfo hit = Tree64RayCast(worldOrigin, localPos, rayDir);
 
-  float4 color = float4(rayDir.x, rayDir.y, rayDir.z, 1);
+  float4 color = float4(0, 0, 0, 1);
   if (any(hit.Normal != float3(0, 0, 0))) {
-    float3 normal = float3(hit.Normal.x, hit.Normal.z, hit.Normal.y); // swap back to Y-up
+    float3 normal = float3(hit.Normal.x, hit.Normal.z, -hit.Normal.y);
     float3 matColor = palette[hit.MaterialId].rgb;
     float3 lightDir = normalize(float3(0.5, 1.0, 0.3));
     float ndotl = max(dot(normal, lightDir), 0.1);
@@ -81,9 +74,6 @@ void main(uint3 globalId: SV_DispatchThreadID) {
 
   output[globalId.xy] = color;
 }
-
-// --- Adapted traversal that works with storage buffers instead of raw pointers
-// ---
 
 struct Node {
   uint packedData0;
@@ -118,7 +108,6 @@ uint ReadLeafMaterial(Node node, uint childIdx) {
   return (word >> byteIdx) & 0xFF;
 }
 
-// Bit test helper matching the original
 bool BitTest(uint64_t value, uint shift, uint mask) {
   uint low = shift < 32 ? uint(value) : uint(value >> 32);
   return (low >> (shift & 31) & mask) != 0;

@@ -4,18 +4,9 @@ use std::io::{self};
 
 use crate::tree64_renderer::GpuTree64;
 
-/// Magic bytes identifying a .world file.
 pub const WORLD_MAGIC: [u8; 4] = *b"WRLD";
-
-/// Current format version. v3: single-tree layout (no chunk TOC).
 pub const WORLD_VERSION: u32 = 3;
 
-/// World dimensions in voxels.
-pub const WORLD_X: u32 = 2048;
-pub const WORLD_Y: u32 = 2048;
-pub const WORLD_Z: u32 = 2048;
-
-/// Header of a .world file (64 bytes).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WorldHeader {

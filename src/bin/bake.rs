@@ -34,13 +34,6 @@ fn main() {
         vox_data.scenes.len(),
     );
 
-    eprintln!(
-        "World size: {}×{}×{} voxels",
-        wgpu_rt::formats::WORLD_X,
-        wgpu_rt::formats::WORLD_Y,
-        wgpu_rt::formats::WORLD_Z,
-    );
-
     let world_file = wgpu_rt::world::loader::SceneGraphLoader::load(&vox_data, palette_array);
 
     eprintln!("World loading done.");
