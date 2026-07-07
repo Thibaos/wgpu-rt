@@ -98,7 +98,6 @@ impl SurfaceWrapper {
 }
 
 struct RenderContext {
-    instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -172,7 +171,6 @@ impl RenderContext {
 
         (
             Self {
-                instance,
                 adapter,
                 device,
                 queue,

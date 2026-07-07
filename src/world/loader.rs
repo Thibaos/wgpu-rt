@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
-use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
+use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
 use crate::formats::WorldFile;
@@ -309,20 +309,6 @@ impl SceneGraphLoader {
                 let shape_model = &models[0];
                 let model = &vox_data.models[shape_model.model_id as usize];
 
-                log::info!(
-                    "Shape #{} — model_id={}, size={}×{}×{}, t=({},{},{}), rot={:?}, {} voxels",
-                    node_index,
-                    shape_model.model_id,
-                    model.size.x,
-                    model.size.y,
-                    model.size.z,
-                    translation.x,
-                    translation.y,
-                    translation.z,
-                    rotation,
-                    model.voxels.len(),
-                );
-
                 if model.voxels.is_empty() {
                     return;
                 }
@@ -339,22 +325,24 @@ impl SceneGraphLoader {
     }
 
     fn to_transform(translation: IVec3, rotation: Rotation, size: UVec3) -> Mat4 {
-        let mut translation = translation.as_vec3a().xzy();
-        translation.z *= -1.0;
+        let translation = translation.as_vec3a();
 
         let (quat, scale) = rotation.to_quat_scale();
         let quat = glam::Quat::from_array(quat);
-        let quat = glam::Quat::from_xyzw(quat.x, quat.z, -quat.y, quat.w);
-        let scale = Vec3A::from_array(scale).xzy();
+        let scale = Vec3A::from_array(scale);
 
         let mut offset = Vec3A::new(
             if size.x.is_multiple_of(2) { 0.0 } else { 0.5 },
+            if size.y.is_multiple_of(2) { 0.0 } else { 0.5 },
             if size.z.is_multiple_of(2) { 0.0 } else { 0.5 },
-            if size.y.is_multiple_of(2) { 0.0 } else { -0.5 },
         );
         offset = quat.mul_vec3a(offset);
 
-        let center = quat * (size.xzy().as_vec3a() / 2.0);
+        let center = quat * Vec3A::new(
+            size.x as f32 / 2.0,
+            size.y as f32 / 2.0,
+            size.z as f32 / 2.0,
+        );
 
         Mat4::from_scale_rotation_translation(
             scale.into(),
@@ -376,7 +364,7 @@ impl SceneGraphLoader {
             .fold(HashMap::new, |mut acc, instance| {
                 let transform = &instance.transform;
                 for voxel in instance.voxels {
-                    let local_engine = Vec3A::new(voxel.x as f32, voxel.z as f32, voxel.y as f32);
+                    let local_engine = Vec3A::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
                     let world_f = transform.transform_point3a(local_engine);
                     let world_x = world_f.x.round() as i32;
                     let world_y = world_f.y.round() as i32;
