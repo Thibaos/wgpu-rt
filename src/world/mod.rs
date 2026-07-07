@@ -1,4 +1,5 @@
 pub mod chunk_manager;
+pub mod loader;
 
 use std::fs::File;
 use std::io::BufReader;
@@ -9,7 +10,7 @@ use crate::tree64_renderer::GpuTree64;
 
 /// Loaded world state: all chunks (some may be empty) and their metadata.
 pub struct World {
-    /// GpuTree64 for each chunk. Index: chunks[x + z * CHUNK_COUNT_X].
+    /// GpuTree64 for each chunk. Index: x + z * CHUNK_COUNT_X.
     /// None means the chunk was empty (not present in the .world file).
     pub chunks: Vec<Option<GpuTree64>>,
     pub chunk_count_x: u32,
