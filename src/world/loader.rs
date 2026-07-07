@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
@@ -7,110 +6,140 @@ use glam::{IVec3, Mat4, UVec3, Vec3A, Vec3Swizzles};
 use rayon::prelude::*;
 
 use crate::formats::WorldFile;
-use crate::formats::chunk::ChunkData;
 use crate::tree64_renderer::GpuTree64;
 
-const WORLD_X: u32 = crate::formats::CHUNK_COUNT_X * crate::formats::CHUNK_VOXEL_X;
-const WORLD_Y: u32 = crate::formats::CHUNK_COUNT_Y * crate::formats::CHUNK_VOXEL_Y;
-const WORLD_Z: u32 = crate::formats::CHUNK_COUNT_Z * crate::formats::CHUNK_VOXEL_Z;
+// ---- block-based VoxelModel (avoids 68B dead HashMap lookups) ----
 
-const CHUNK_DIM_X: u32 = crate::formats::CHUNK_VOXEL_X;
-const CHUNK_DIM_Z: u32 = crate::formats::CHUNK_VOXEL_Z;
-const CHUNKS_X: u32 = crate::formats::CHUNK_COUNT_X;
-const CHUNKS_Z: u32 = crate::formats::CHUNK_COUNT_Z;
+/// Side length of one dense block in voxels. 16³ = 4096 voxels per block.
+const BLOCK_SIZE: u32 = 16;
+const BLOCK_VOXELS: usize = (BLOCK_SIZE * BLOCK_SIZE * BLOCK_SIZE) as usize; // 4096
+const BLOCK_BITS: usize = BLOCK_VOXELS / 64; // 64 u64s = 4096 bits
 
-struct ModelInstance<'a> {
-    transform: Mat4,
-    voxels: &'a [Voxel],
+struct BlockData {
+    colors: [u8; BLOCK_VOXELS],
+    occupied: [u64; BLOCK_BITS],
 }
 
-struct ChunkVoxels {
-    /// Voxel data already shifted so the AABB min is at (0,0,0).
-    voxels: HashMap<(u32, u32, u32), u8>,
-    /// AABB size (max - min), at least 1 in each axis.
+/// A VoxelModel backed by dense 16³ blocks.  Every `access()` call costs:
+///   1. shift+div to get block index → array lookup
+///   2. bit test on the occupancy-mask
+///   3. read the u8 colour  (all cheap, no hashing)
+///
+/// Blocks that contain no voxels are `None` — access returns `None` immediately.
+struct SparseBlocks {
+    blocks: Vec<Option<Box<BlockData>>>,
+    blocks_per_axis: u32,
     dims: [u32; 3],
-    /// The original minimum coordinate of the AABB within the chunk.
-    /// Will be used as `root_offset` in the GPU tree.
-    aabb_min: [i32; 3],
 }
 
-impl ChunkVoxels {
-    /// Build a `ChunkVoxels` from a raw (unchanged) voxel map.
-    /// Computes the AABB, shifts all coordinates to start at (0,0,0),
-    /// and stores the AABB size and the original minimum.
-    fn from_raw(raw: HashMap<(u32, u32, u32), u8>) -> Self {
-        if raw.is_empty() {
-            return Self {
-                voxels: HashMap::new(),
-                dims: [1, 1, 1],
-                aabb_min: [0, 0, 0],
-            };
+impl SparseBlocks {
+    fn from_world_voxels(
+        voxels: &HashMap<(i32, i32, i32), u8>,
+        origin: IVec3,
+        tree_dim: u32,
+    ) -> Self {
+        let blocks_per_axis = tree_dim / BLOCK_SIZE;
+        let total_blocks = (blocks_per_axis * blocks_per_axis * blocks_per_axis) as usize;
+
+        let t = Instant::now();
+        let mut blocks: Vec<Option<Box<BlockData>>> = Vec::with_capacity(total_blocks);
+        blocks.resize_with(total_blocks, || None);
+
+        for (&(wx, wy, wz), &color) in voxels {
+            let lx = (wx - origin.x) as u32;
+            let ly = (wy - origin.y) as u32;
+            let lz = (wz - origin.z) as u32;
+
+            debug_assert!(lx < tree_dim && ly < tree_dim && lz < tree_dim);
+
+            let bx = lx / BLOCK_SIZE;
+            let by = ly / BLOCK_SIZE;
+            let bz = lz / BLOCK_SIZE;
+            let block_idx =
+                (bx + by * blocks_per_axis + bz * blocks_per_axis * blocks_per_axis) as usize;
+
+            let block = blocks[block_idx].get_or_insert_with(|| {
+                Box::new(BlockData {
+                    colors: [0u8; BLOCK_VOXELS],
+                    occupied: [0u64; BLOCK_BITS],
+                })
+            });
+
+            let il = (lx % BLOCK_SIZE) as usize;
+            let jl = (ly % BLOCK_SIZE) as usize;
+            let kl = (lz % BLOCK_SIZE) as usize;
+            let local =
+                il + jl * BLOCK_SIZE as usize + kl * BLOCK_SIZE as usize * BLOCK_SIZE as usize;
+
+            block.colors[local] = color;
+            block.occupied[local / 64] |= 1 << (local % 64);
         }
 
-        let mut min = [u32::MAX; 3];
-        let mut max = [0u32; 3];
-        for &(x, y, z) in raw.keys() {
-            min[0] = min[0].min(x);
-            min[1] = min[1].min(y);
-            min[2] = min[2].min(z);
-            max[0] = max[0].max(x);
-            max[1] = max[1].max(y);
-            max[2] = max[2].max(z);
-        }
-
-        // Cap each dimension at 256 to keep tree64 scale ≤ 4⁴.
-        // Voxels beyond this are clipped (same policy as X/Z bounds).
-        const MAX_DIM: u32 = 256;
-        let dims = [
-            (max[0] - min[0] + 1).min(MAX_DIM),
-            (max[1] - min[1] + 1).min(MAX_DIM),
-            (max[2] - min[2] + 1).min(MAX_DIM),
-        ];
-
-        let total_before = raw.len();
-        let voxels: HashMap<(u32, u32, u32), u8> = raw
-            .into_iter()
-            .filter_map(|((x, y, z), v)| {
-                let sx = x - min[0];
-                let sy = y - min[1];
-                let sz = z - min[2];
-                if sx >= dims[0] || sy >= dims[1] || sz >= dims[2] {
-                    None
-                } else {
-                    Some(((sx, sy, sz), v))
-                }
-            })
-            .collect();
-
-        let clipped = total_before - voxels.len();
-        if clipped > 0 {
-            log::warn!(
-                "Clipped {} voxels from AABB {}×{}×{} (capped at 256³)",
-                clipped,
-                max[0] - min[0] + 1,
-                max[1] - min[1] + 1,
-                max[2] - min[2] + 1,
-            );
-        }
+        log::info!(
+            "Packed {} voxels into {} blocks ({:.2}s)",
+            voxels.len(),
+            blocks.iter().filter(|b| b.is_some()).count(),
+            t.elapsed().as_secs_f32(),
+        );
 
         Self {
-            voxels,
-            dims,
-            aabb_min: [min[0] as i32, min[1] as i32, min[2] as i32],
+            blocks,
+            blocks_per_axis,
+            dims: [tree_dim; 3],
         }
+    }
+
+    /// Number of non-empty blocks (for logging).
+    #[allow(unused)]
+    fn occupied_block_count(&self) -> usize {
+        self.blocks.iter().filter(|b| b.is_some()).count()
     }
 }
 
-impl tree64::VoxelModel<u8> for &ChunkVoxels {
+impl tree64::VoxelModel<u8> for &SparseBlocks {
     fn dimensions(&self) -> [u32; 3] {
         self.dims
     }
 
+    #[inline]
     fn access(&self, coord: [usize; 3]) -> Option<u8> {
-        self.voxels
-            .get(&(coord[0] as u32, coord[1] as u32, coord[2] as u32))
-            .copied()
+        let x = coord[0] as u32;
+        let y = coord[1] as u32;
+        let z = coord[2] as u32;
+
+        // Bounds check — cheap, handles coordinates that tree64 rounds up beyond
+        // the actual scene extent.
+        if x >= self.dims[0] || y >= self.dims[1] || z >= self.dims[2] {
+            return None;
+        }
+
+        let bx = x / BLOCK_SIZE;
+        let by = y / BLOCK_SIZE;
+        let bz = z / BLOCK_SIZE;
+
+        let block_idx = (bx
+            + by * self.blocks_per_axis
+            + bz * self.blocks_per_axis * self.blocks_per_axis) as usize;
+
+        let block = self.blocks[block_idx].as_ref()?;
+
+        let il = (x % BLOCK_SIZE) as usize;
+        let jl = (y % BLOCK_SIZE) as usize;
+        let kl = (z % BLOCK_SIZE) as usize;
+        let local = il + jl * BLOCK_SIZE as usize + kl * BLOCK_SIZE as usize * BLOCK_SIZE as usize;
+
+        if block.occupied[local / 64] & (1 << (local % 64)) == 0 {
+            return None;
+        }
+        Some(block.colors[local])
     }
+}
+
+// ---- scene graph traversal (unchanged) ----
+
+struct ModelInstance<'a> {
+    transform: Mat4,
+    voxels: &'a [Voxel],
 }
 
 pub struct SceneGraphLoader;
@@ -119,25 +148,9 @@ impl SceneGraphLoader {
     pub fn load(vox_data: &DotVoxData, palette: [[u8; 4]; 256]) -> WorldFile {
         let t_total = Instant::now();
 
-        let t0 = Instant::now();
         let instances = Self::collect_instances(vox_data);
-        log::info!(
-            "Phase A — traversal: {} instances in {:.2}s",
-            instances.len(),
-            t0.elapsed().as_secs_f32(),
-        );
-
-        let t0 = Instant::now();
-        let chunk_buckets = Self::bucket_voxels(&instances);
-        log::info!(
-            "Phase B — bucketing: {} chunks in {:.2}s",
-            chunk_buckets.len(),
-            t0.elapsed().as_secs_f32(),
-        );
-
-        let t0 = Instant::now();
-        let world = Self::build_world_file(chunk_buckets, palette);
-        log::info!("Phase C — tree build: {:.2}s", t0.elapsed().as_secs_f32(),);
+        let all_voxels = Self::collect_all_voxels(&instances);
+        let world = Self::build_world_file(all_voxels, palette);
 
         log::info!("Total bake time: {:.2}s", t_total.elapsed().as_secs_f32());
         world
@@ -180,7 +193,7 @@ impl SceneGraphLoader {
                 &mut visited,
             );
             log::info!(
-                "  Visited {} scene nodes, collected {} model instances",
+                "Visited {} scene nodes, collected {} model instances",
                 node_count,
                 instances.len()
             );
@@ -189,6 +202,7 @@ impl SceneGraphLoader {
         instances
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn traverse_recursive<'a>(
         vox_data: &'a DotVoxData,
         node_index: u32,
@@ -201,7 +215,6 @@ impl SceneGraphLoader {
     ) {
         *node_count += 1;
 
-        // Cycle guard — a well-formed .vox should never hit this.
         if !visited.insert(node_index) {
             log::warn!(
                 "Scene graph cycle detected at node {} (depth {}), skipping re-visit",
@@ -296,16 +309,18 @@ impl SceneGraphLoader {
                 let shape_model = &models[0];
                 let model = &vox_data.models[shape_model.model_id as usize];
 
-                log::debug!(
-                    "{:indent$}Shape #{} — model_id={}, size={}×{}×{}, {} voxels",
-                    "",
+                log::info!(
+                    "Shape #{} — model_id={}, size={}×{}×{}, t=({},{},{}), rot={:?}, {} voxels",
                     node_index,
                     shape_model.model_id,
                     model.size.x,
                     model.size.y,
                     model.size.z,
+                    translation.x,
+                    translation.y,
+                    translation.z,
+                    rotation,
                     model.voxels.len(),
-                    indent = depth as usize * 2,
                 );
 
                 if model.voxels.is_empty() {
@@ -348,155 +363,124 @@ impl SceneGraphLoader {
         )
     }
 
-    fn bucket_voxels(instances: &[ModelInstance<'_>]) -> HashMap<usize, ChunkVoxels> {
+    fn collect_all_voxels(instances: &[ModelInstance<'_>]) -> HashMap<(i32, i32, i32), u8> {
         let total_voxels: usize = instances.iter().map(|i| i.voxels.len()).sum();
         log::info!(
-            "Bucketing {} voxels across {} instances…",
+            "Collecting {} voxels across {} instances…",
             total_voxels,
             instances.len(),
         );
 
-        let out_of_bounds = AtomicU64::new(0);
-        let world_bounds = UVec3::new(WORLD_X, WORLD_Y, WORLD_Z);
-
-        let merged: HashMap<usize, HashMap<(u32, u32, u32), u8>> = instances
+        let result = instances
             .par_iter()
-            .fold(
-                HashMap::new,
-                |mut acc: HashMap<usize, HashMap<(u32, u32, u32), u8>>, instance| {
-                    let transform = &instance.transform;
-                    log::debug!("  {} voxels", instance.voxels.len());
-                    for voxel in instance.voxels {
-                        let local_engine =
-                            Vec3A::new(voxel.x as f32, voxel.z as f32, voxel.y as f32);
-                        let world_f = transform.transform_point3a(local_engine);
-
-                        let world_x = world_f.x.round() as i32;
-                        let world_y = world_f.y.round() as i32;
-                        let world_z = world_f.z.round() as i32;
-
-                        if world_x < 0
-                            || world_y < 0
-                            || world_z < 0
-                            || world_x as u32 >= world_bounds.x
-                            || world_y as u32 >= world_bounds.y
-                            || world_z as u32 >= world_bounds.z
-                        {
-                            out_of_bounds.fetch_add(1, Ordering::Relaxed);
-                            continue;
-                        }
-
-                        let wx = world_x as u32;
-                        let wy = world_y as u32;
-                        let wz = world_z as u32;
-
-                        let cx = wx / CHUNK_DIM_X;
-                        let cz = wz / CHUNK_DIM_Z;
-                        let chunk_index = (cx + cz * CHUNKS_X) as usize;
-
-                        let local_x = wx % CHUNK_DIM_X;
-                        let local_y = wy;
-                        let local_z = wz % CHUNK_DIM_Z;
-
-                        acc.entry(chunk_index)
-                            .or_default()
-                            .insert((local_x, local_y, local_z), voxel.i);
-                    }
-                    acc
-                },
-            )
-            .reduce(HashMap::new, |mut a, b| {
-                for (chunk_idx, voxels) in b {
-                    a.entry(chunk_idx).or_default().extend(voxels);
+            .fold(HashMap::new, |mut acc, instance| {
+                let transform = &instance.transform;
+                for voxel in instance.voxels {
+                    let local_engine = Vec3A::new(voxel.x as f32, voxel.z as f32, voxel.y as f32);
+                    let world_f = transform.transform_point3a(local_engine);
+                    let world_x = world_f.x.round() as i32;
+                    let world_y = world_f.y.round() as i32;
+                    let world_z = world_f.z.round() as i32;
+                    acc.insert((world_x, world_y, world_z), voxel.i);
                 }
+                acc
+            })
+            .reduce(HashMap::new, |mut a, b| {
+                a.extend(b);
                 a
             });
 
-        let out_of_bounds_count = out_of_bounds.load(Ordering::Relaxed);
-        if out_of_bounds_count > 0 {
-            log::warn!(
-                "{} voxels fell outside world bounds ({}×{}×{}) and were dropped",
-                out_of_bounds_count,
-                WORLD_X,
-                WORLD_Y,
-                WORLD_Z,
-            );
-        }
+        let unique = result.len();
+        log::info!(
+            "Collected {} unique voxels ({} raw, {} overlap-collapsed)",
+            unique,
+            total_voxels,
+            total_voxels - unique,
+        );
 
-        merged
-            .into_iter()
-            .map(|(index, voxel_map)| (index, ChunkVoxels::from_raw(voxel_map)))
-            .collect()
+        result
+    }
+
+    // ---- tight-bounding-box tree construction ----
+
+    /// Round `n` up to the next power-of-four (4, 16, 64, 256, 1024, 4096, …).
+    fn round_up_pow4(n: u32) -> u32 {
+        let mut s = n.max(4).next_power_of_two();
+        if s.ilog2() % 2 == 1 {
+            s *= 2;
+        }
+        s
     }
 
     fn build_world_file(
-        chunk_buckets: HashMap<usize, ChunkVoxels>,
+        voxels: HashMap<(i32, i32, i32), u8>,
         palette: [[u8; 4]; 256],
     ) -> WorldFile {
         let mut world_file = WorldFile::new();
         world_file.palette = palette;
 
-        let total_chunks = (CHUNKS_X * CHUNKS_Z) as usize;
-
-        log::info!(
-            "Building trees for {} non-empty chunks (parallel) …",
-            chunk_buckets.len(),
-        );
-
-        let chunk_entries: Vec<(usize, ChunkData)> = chunk_buckets
-            .into_par_iter()
-            .filter_map(|(chunk_index, chunk_voxels)| {
-                if chunk_index >= total_chunks {
-                    log::warn!("Chunk index {} out of range, skipping", chunk_index);
-                    return None;
-                }
-
-                let aabb = chunk_voxels.dims;
-                let aabb_min = chunk_voxels.aabb_min;
-
-                log::info!(
-                    "  Chunk [{}]: building tree (AABB {}×{}×{} @ ({},{},{}))…",
-                    chunk_index,
-                    aabb[0],
-                    aabb[1],
-                    aabb[2],
-                    aabb_min[0],
-                    aabb_min[1],
-                    aabb_min[2],
-                );
-
-                let tree = tree64::Tree64::new(&chunk_voxels);
-
-                if tree.nodes.is_empty()
-                    || (tree.root_state().index == 0 && tree.nodes[0].pop_mask == 0)
-                {
-                    return None;
-                }
-
-                log::info!(
-                    "  Chunk [{}]: done — {} nodes, {} bytes leaf",
-                    chunk_index,
-                    tree.nodes.len(),
-                    tree.data.len(),
-                );
-
-                let mut gpu_tree = GpuTree64::from_tree64(&tree);
-                gpu_tree.root_offset = aabb_min;
-                Some((chunk_index, ChunkData::new(gpu_tree)))
-            })
-            .collect();
-
-        let chunks_written = chunk_entries.len() as u32;
-        for (index, data) in chunk_entries {
-            world_file.set_chunk(index, data);
+        if voxels.is_empty() {
+            log::warn!("No voxels in world — output will be empty.");
+            return world_file;
         }
 
+        // --- 1. compute tight AABB (signed world-space) ---
+        let t_aabb = Instant::now();
+        let mut bb_min = IVec3::splat(i32::MAX);
+        let mut bb_max = IVec3::splat(i32::MIN);
+        for &(x, y, z) in voxels.keys() {
+            bb_min.x = bb_min.x.min(x);
+            bb_min.y = bb_min.y.min(y);
+            bb_min.z = bb_min.z.min(z);
+            bb_max.x = bb_max.x.max(x);
+            bb_max.y = bb_max.y.max(y);
+            bb_max.z = bb_max.z.max(z);
+        }
+        let aabb_min = bb_min;
+        let aabb_size = (bb_max - bb_min + IVec3::ONE).as_uvec3();
+
+        // --- 2. round up to a power-of-four cube ---
+        let max_dim = aabb_size.x.max(aabb_size.y).max(aabb_size.z);
+        let tree_dim = Self::round_up_pow4(max_dim);
+
         log::info!(
-            "Total non-empty chunks: {} / {}",
-            chunks_written,
-            total_chunks,
+            "Scene AABB: min=({},{},{}) size=({},{},{}) → tree {tree_dim}³ ({:.2}s)",
+            bb_min.x,
+            bb_min.y,
+            bb_min.z,
+            aabb_size.x,
+            aabb_size.y,
+            aabb_size.z,
+            t_aabb.elapsed().as_secs_f32(),
         );
 
+        // --- 3. pack into dense blocks (local coords relative to aabb_min) ---
+        let blocks = SparseBlocks::from_world_voxels(&voxels, aabb_min, tree_dim);
+        drop(voxels);
+
+        // --- 4. build tree on the smaller volume ---
+        let t_tree = Instant::now();
+        let tree = tree64::Tree64::new(&blocks);
+        log::info!(
+            "Tree built: {} nodes, {} bytes leaf data, {} levels ({:.2}s)",
+            tree.nodes.len(),
+            tree.data.len(),
+            tree.root_state().num_levels,
+            t_tree.elapsed().as_secs_f32(),
+        );
+
+        // --- 5. convert to GPU tree, fix up world-space offset ---
+        let mut gpu_tree = GpuTree64::from_tree64(&tree);
+        gpu_tree.root_offset = [aabb_min.x, aabb_min.y, aabb_min.z];
+
+        log::info!(
+            "GPU tree: root_offset=({},{},{})",
+            gpu_tree.root_offset[0],
+            gpu_tree.root_offset[1],
+            gpu_tree.root_offset[2],
+        );
+
+        world_file.tree = Some(gpu_tree);
         world_file
     }
 }

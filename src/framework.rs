@@ -98,7 +98,6 @@ impl SurfaceWrapper {
 }
 
 struct RenderContext {
-    #[allow(dead_code)]
     instance: wgpu::Instance,
     adapter: wgpu::Adapter,
     device: wgpu::Device,

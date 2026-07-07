@@ -121,7 +121,6 @@ pub fn create_palette_buffer(device: &wgpu::Device, palette: &[[u8; 4]; 256]) ->
     })
 }
 
-#[allow(dead_code)]
 impl GpuTree64 {
     /// Build GpuTree64 from an already-constructed Tree64<u8>.
     /// Useful when deserializing a pre-built tree (no VoxelModel needed).

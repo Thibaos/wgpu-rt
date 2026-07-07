@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io::BufWriter;
 
 fn main() {
-    env_logger::builder().filter_level(log::LevelFilter::Info).init();
+    env_logger::builder()
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     let args: Vec<String> = env::args().collect();
     if args.len() != 3 {
@@ -16,7 +18,6 @@ fn main() {
 
     let vox_data = dot_vox::load(input_path).expect("failed to parse .vox file");
 
-    // Extract the 256-color RGBA8 palette.
     let palette_src: &[dot_vox::Color] = if vox_data.palette.is_empty() {
         &dot_vox::DEFAULT_PALETTE
     } else {
@@ -34,13 +35,10 @@ fn main() {
     );
 
     eprintln!(
-        "Chunk grid: {}×{}×{}, chunk size: {}×{}×{} voxels",
-        wgpu_rt::formats::CHUNK_COUNT_X,
-        wgpu_rt::formats::CHUNK_COUNT_Y,
-        wgpu_rt::formats::CHUNK_COUNT_Z,
-        wgpu_rt::formats::CHUNK_VOXEL_X,
-        wgpu_rt::formats::CHUNK_VOXEL_Y,
-        wgpu_rt::formats::CHUNK_VOXEL_Z,
+        "World size: {}×{}×{} voxels",
+        wgpu_rt::formats::WORLD_X,
+        wgpu_rt::formats::WORLD_Y,
+        wgpu_rt::formats::WORLD_Z,
     );
 
     let world_file = wgpu_rt::world::loader::SceneGraphLoader::load(&vox_data, palette_array);

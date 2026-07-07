@@ -1,28 +1,19 @@
-//! Binary world format (.world) — header, chunk table of contents,
-//! and per-chunk GPU-ready blobs.
-
-#![allow(dead_code)]
-
-pub mod chunk;
+//! Binary world format (.world) — header, palette, and a single GPU-ready tree blob.
 
 use std::io::{self};
 
-use crate::formats::chunk::ChunkData;
+use crate::tree64_renderer::GpuTree64;
 
 /// Magic bytes identifying a .world file.
 pub const WORLD_MAGIC: [u8; 4] = *b"WRLD";
 
-/// Current format version.
-pub const WORLD_VERSION: u32 = 2;
+/// Current format version. v3: single-tree layout (no chunk TOC).
+pub const WORLD_VERSION: u32 = 3;
 
-/// World dimensions (immutable for this format version).
-pub const CHUNK_COUNT_X: u32 = 16;
-pub const CHUNK_COUNT_Y: u32 = 1;
-pub const CHUNK_COUNT_Z: u32 = 16;
-pub const CHUNK_VOXEL_X: u32 = 256;
-pub const CHUNK_VOXEL_Y: u32 = 2048;
-pub const CHUNK_VOXEL_Z: u32 = 256;
-pub const TOTAL_CHUNKS: u32 = CHUNK_COUNT_X * CHUNK_COUNT_Y * CHUNK_COUNT_Z;
+/// World dimensions in voxels.
+pub const WORLD_X: u32 = 2048;
+pub const WORLD_Y: u32 = 2048;
+pub const WORLD_Z: u32 = 2048;
 
 /// Header of a .world file (64 bytes).
 #[repr(C)]
@@ -30,27 +21,17 @@ pub const TOTAL_CHUNKS: u32 = CHUNK_COUNT_X * CHUNK_COUNT_Y * CHUNK_COUNT_Z;
 pub struct WorldHeader {
     pub magic: [u8; 4],
     pub version: u32,
-    pub chunk_count_x: u32,
-    pub chunk_count_y: u32,
-    pub chunk_count_z: u32,
-    pub chunk_voxel_x: u32,
-    pub chunk_voxel_y: u32,
-    pub chunk_voxel_z: u32,
-    pub reserved: [u8; 32],
+    pub tree_present: u32,
+    pub reserved: [u8; 52],
 }
 
 impl WorldHeader {
-    pub fn new() -> Self {
+    pub fn new(tree_present: bool) -> Self {
         Self {
             magic: WORLD_MAGIC,
             version: WORLD_VERSION,
-            chunk_count_x: CHUNK_COUNT_X,
-            chunk_count_y: CHUNK_COUNT_Y,
-            chunk_count_z: CHUNK_COUNT_Z,
-            chunk_voxel_x: CHUNK_VOXEL_X,
-            chunk_voxel_y: CHUNK_VOXEL_Y,
-            chunk_voxel_z: CHUNK_VOXEL_Z,
-            reserved: [0; 32],
+            tree_present: if tree_present { 1 } else { 0 },
+            reserved: [0; 52],
         }
     }
 
@@ -67,7 +48,16 @@ impl WorldHeader {
         if header.version > WORLD_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("unsupported world version: {}", header.version),
+                format!(
+                    "unsupported world version: {} (max {}) — re-bake the world file",
+                    header.version, WORLD_VERSION
+                ),
+            ));
+        }
+        if header.version < 3 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "world file is pre-v3 (chunk format); re-bake with `cargo run --bin bake`",
             ));
         }
         Ok(header)
@@ -77,77 +67,75 @@ impl WorldHeader {
         let bytes: &[u8; 64] = unsafe { std::mem::transmute(self) };
         writer.write_all(bytes)
     }
-
-    pub fn total_chunks(&self) -> u32 {
-        self.chunk_count_x * self.chunk_count_y * self.chunk_count_z
-    }
 }
 
-impl Default for WorldHeader {
+/// Complete world file: header + palette + single tree blob.
+pub struct WorldFile {
+    pub header: WorldHeader,
+    /// 256-color RGBA8 palette (from .vox file or zeros).
+    pub palette: [[u8; 4]; 256],
+    /// The single tree covering the full world, or None for an empty world.
+    pub tree: Option<GpuTree64>,
+}
+
+impl Default for WorldFile {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// Single entry in the chunk table of contents (16 bytes).
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct ChunkTocEntry {
-    pub byte_offset: u64,
-    pub size: u64,
-}
-
-impl ChunkTocEntry {
-    pub fn read(mut reader: impl io::Read) -> io::Result<Self> {
-        let mut bytes = [0u8; 16];
-        reader.read_exact(&mut bytes)?;
-        Ok(unsafe { std::ptr::read(bytes.as_ptr() as *const Self) })
-    }
-
-    pub fn write(&self, mut writer: impl io::Write) -> io::Result<()> {
-        let bytes: &[u8; 16] = unsafe { std::mem::transmute(self) };
-        writer.write_all(bytes)
-    }
-}
-
-/// The full chunk table of contents (256 entries × 16 bytes = 4096 bytes).
-pub struct ChunkTable {
-    pub entries: Vec<ChunkTocEntry>,
-}
-
-impl ChunkTable {
-    pub fn new(chunk_count: u32) -> Self {
+impl WorldFile {
+    pub fn new() -> Self {
         Self {
-            entries: vec![ChunkTocEntry::default(); chunk_count as usize],
+            header: WorldHeader::new(false),
+            palette: [[0u8; 4]; 256],
+            tree: None,
         }
     }
 
-    pub fn read(mut reader: impl io::Read, chunk_count: u32) -> io::Result<Self> {
-        let mut entries = Vec::with_capacity(chunk_count as usize);
-        for _ in 0..chunk_count {
-            entries.push(ChunkTocEntry::read(&mut reader)?);
-        }
-        Ok(Self { entries })
-    }
-
+    /// Write the complete world file.
     pub fn write(&self, mut writer: impl io::Write) -> io::Result<()> {
-        for entry in &self.entries {
-            entry.write(&mut writer)?;
+        let header = WorldHeader::new(self.tree.is_some());
+        header.write(&mut writer)?;
+
+        // Palette: 256 colors × 4 bytes = 1024 bytes
+        let palette_bytes: [u8; 1024] = bytemuck::cast(self.palette);
+        writer.write_all(&palette_bytes)?;
+
+        // Single tree blob
+        if let Some(ref tree) = self.tree {
+            tree.serialize(&mut writer)?;
         }
+
         Ok(())
     }
 
-    /// Convert a 3D chunk coordinate to a flat index.
-    /// Layout: index = x + z * chunk_count_x  (y is always 0 since chunk_count_y = 1).
-    pub fn chunk_index(x: u32, _y: u32, z: u32, chunk_count_x: u32) -> usize {
-        (x + z * chunk_count_x) as usize
+    /// Read a complete world file.
+    pub fn read(mut reader: impl io::Read) -> io::Result<Self> {
+        let header = WorldHeader::read(&mut reader)?;
+
+        // Read palette: 1024 bytes of RGBA8
+        let mut palette_bytes = [0u8; 1024];
+        reader.read_exact(&mut palette_bytes)?;
+        let palette: [[u8; 4]; 256] = bytemuck::cast(palette_bytes);
+
+        let tree = if header.tree_present != 0 {
+            Some(GpuTree64::deserialize(&mut reader)?)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            header,
+            palette,
+            tree,
+        })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::formats::chunk::ChunkData;
     use crate::tree64_renderer::{GpuNode, GpuTree64};
     use std::io::Cursor;
 
@@ -167,148 +155,36 @@ mod tests {
     #[test]
     fn world_file_roundtrip() {
         let mut world = WorldFile::new();
+        world.palette[1] = [255, 0, 0, 255];
+        world.tree = Some(make_dummy_gpu_tree());
 
-        // Add a few chunks at known positions
-        let chunk0 = ChunkData::new(make_dummy_gpu_tree());
-        world.set_chunk(0, chunk0);
-
-        let mut chunk5 = make_dummy_gpu_tree();
-        chunk5.leaf_data = vec![5, 6, 7, 8];
-        world.set_chunk(5, ChunkData::new(chunk5));
-
-        // Write to memory
         let mut buf = Cursor::new(Vec::new());
         world.write(&mut buf).unwrap();
 
-        // Read back
         buf.set_position(0);
         let loaded = WorldFile::read(&mut buf).unwrap();
 
-        // Verify header
         assert_eq!(loaded.header.magic, WORLD_MAGIC);
         assert_eq!(loaded.header.version, WORLD_VERSION);
-        assert_eq!(loaded.header.total_chunks(), 256);
+        assert_eq!(loaded.header.tree_present, 1);
+        assert_eq!(loaded.palette[1], [255, 0, 0, 255]);
 
-        // Verify chunk 0
-        let chunk0_loaded = loaded.chunks[0].as_ref().unwrap();
-        assert_eq!(chunk0_loaded.tree.nodes.len(), 2);
-        assert_eq!(chunk0_loaded.tree.leaf_data, vec![1, 2, 3, 4]);
-
-        // Verify chunk 5
-        let chunk5_loaded = loaded.chunks[5].as_ref().unwrap();
-        assert_eq!(chunk5_loaded.tree.leaf_data, vec![5, 6, 7, 8]);
-
-        // Verify empty chunks are None
-        assert!(loaded.chunks[1].is_none());
-        assert!(loaded.chunks[255].is_none());
-    }
-}
-
-/// Complete world file: header + chunk table + palette + chunk data blobs.
-pub struct WorldFile {
-    pub header: WorldHeader,
-    pub table: ChunkTable,
-    /// Chunk data indexed by the same flat index as the TOC.
-    pub chunks: Vec<Option<ChunkData>>,
-    /// 256-color RGBA8 palette (from .vox file or zeros).
-    pub palette: [[u8; 4]; 256],
-}
-
-impl Default for WorldFile {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WorldFile {
-    pub fn new() -> Self {
-        let header = WorldHeader::new();
-        let total = header.total_chunks() as usize;
-        Self {
-            header,
-            table: ChunkTable::new(total as u32),
-            chunks: (0..total).map(|_| None).collect(),
-            palette: [[0u8; 4]; 256],
-        }
+        let tree = loaded.tree.unwrap();
+        assert_eq!(tree.nodes.len(), 2);
+        assert_eq!(tree.leaf_data, vec![1, 2, 3, 4]);
     }
 
-    /// Set chunk data for the given flat index.
-    pub fn set_chunk(&mut self, index: usize, data: ChunkData) {
-        self.chunks[index] = Some(data);
-    }
+    #[test]
+    fn world_file_empty_roundtrip() {
+        let world = WorldFile::new();
 
-    /// Write the complete world file.
-    pub fn write(&self, mut writer: impl io::Write + io::Seek) -> io::Result<()> {
-        // Write header (64 bytes)
-        self.header.write(&mut writer)?;
+        let mut buf = Cursor::new(Vec::new());
+        world.write(&mut buf).unwrap();
 
-        // Reserve space for the TOC (write placeholder zeros, seek back later)
-        let toc_size = self.table.entries.len() * 16;
-        let toc_start = writer.stream_position()?;
-        let zeros = vec![0u8; toc_size];
-        writer.write_all(&zeros)?;
+        buf.set_position(0);
+        let loaded = WorldFile::read(&mut buf).unwrap();
 
-        // Write palette blob: 256 colors × 4 bytes = 1024 bytes
-        let palette_bytes: [u8; 1024] = bytemuck::cast(self.palette);
-        writer.write_all(&palette_bytes)?;
-
-        // Write chunk data, building TOC entries as we go
-        let mut toc_entries = vec![ChunkTocEntry::default(); self.table.entries.len()];
-
-        for (i, chunk_opt) in self.chunks.iter().enumerate() {
-            if let Some(chunk) = chunk_opt {
-                let offset = writer.stream_position()?;
-                chunk.write(&mut writer)?;
-                let end = writer.stream_position()?;
-                toc_entries[i] = ChunkTocEntry {
-                    byte_offset: offset,
-                    size: end - offset,
-                };
-            }
-        }
-
-        // Seek back and write the TOC
-        writer.seek(io::SeekFrom::Start(toc_start))?;
-        for entry in &toc_entries {
-            entry.write(&mut writer)?;
-        }
-
-        Ok(())
-    }
-
-    /// Read a complete world file.
-    pub fn read(mut reader: impl io::Read + io::Seek) -> io::Result<Self> {
-        let header = WorldHeader::read(&mut reader)?;
-        let total = header.total_chunks() as usize;
-        let table = ChunkTable::read(&mut reader, total as u32)?;
-
-        // Read palette: v2 has 1024-byte palette blob; v1 gets zeros.
-        let palette: [[u8; 4]; 256] = if header.version >= 2 {
-            let mut palette_bytes = [0u8; 1024];
-            reader.read_exact(&mut palette_bytes)?;
-            bytemuck::cast(palette_bytes)
-        } else {
-            log::warn!("World file version 1 has no palette; voxels will render black.");
-            [[0u8; 4]; 256]
-        };
-
-        let mut chunks: Vec<Option<ChunkData>> = Vec::with_capacity(total);
-
-        for entry in &table.entries {
-            if entry.byte_offset == 0 {
-                chunks.push(None);
-            } else {
-                reader.seek(io::SeekFrom::Start(entry.byte_offset))?;
-                let data = ChunkData::read(&mut reader)?;
-                chunks.push(Some(data));
-            }
-        }
-
-        Ok(Self {
-            header,
-            table,
-            chunks,
-            palette,
-        })
+        assert_eq!(loaded.header.tree_present, 0);
+        assert!(loaded.tree.is_none());
     }
 }
