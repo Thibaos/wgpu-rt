@@ -117,7 +117,7 @@ impl App {
         let world_path = std::env::current_dir()
             .unwrap_or_default()
             .join("assets")
-            .join("world.world");
+            .join("castle.world");
 
         let world = if world_path.exists() {
             World::load(&world_path).expect("failed to load world file")
@@ -464,7 +464,7 @@ impl App {
             ],
             view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
             proj_inv: glam::camera::rh::proj::vulkan::perspective(
-                std::f32::consts::FRAC_PI_4,
+                70f32.to_radians(),
                 aspect,
                 0.1,
                 10000.0,

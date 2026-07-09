@@ -8,16 +8,14 @@ struct HitInfo {
 };
 
 // Count number of set bits in a uint64 below `width`
+// Branchless — avoids wave divergence on the width >= 32 path
 uint prefix_popcnt64(uint64_t mask, uint width) {
-  uint himask = uint(mask);
-  uint count = 0;
-  if (width >= 32) {
-    count = countbits(himask);
-    himask = uint(mask >> 32);
-  }
-  uint m = 1u << (width & 31u);
-  count += countbits(himask & (m - 1u));
-  return count;
+  uint lo = uint(mask);
+  uint hi = uint(mask >> 32);
+  bool hi_valid = width >= 32u;
+  uint lo_mask = hi_valid ? 0xFFFFFFFFu : ((1u << width) - 1u);
+  uint hi_mask = hi_valid ? ((1u << (width - 32u)) - 1u) : 0u;
+  return countbits(lo & lo_mask) + countbits(hi & hi_mask);
 }
 
 // Mirror the existing wgpu-rt bindings
