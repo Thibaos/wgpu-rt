@@ -466,7 +466,7 @@ impl App {
         self.physics_accumulator += self.delta_time;
         while self.physics_accumulator >= player_controller::TICK_DURATION {
             self.player_controller
-                .physics_tick(self.tree64.as_ref());
+                .physics_tick(self.tree64.as_ref(), keys);
             self.physics_accumulator -= player_controller::TICK_DURATION;
         }
 

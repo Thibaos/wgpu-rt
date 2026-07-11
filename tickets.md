@@ -39,14 +39,14 @@ Work the **frontier**: any ticket whose blockers are all done. For a purely line
 
 **Blocked by:** 2. Physics loop + gravity + ground
 
-- [ ] WASD applies horizontal velocity at 6 m/s when Grounded, following the camera's horizontal facing direction
-- [ ] Releasing all movement keys stops horizontal velocity immediately on the ground
-- [ ] Walking forward into a wall stops the player at the wall surface (AABB does not penetrate occupied voxels)
-- [ ] Walking diagonally into a wall slides along the wall surface rather than stopping entirely
-- [ ] Swept-AABB stepping (≤ 0.3 m intervals) prevents tunneling through thin walls
-- [ ] Obstacles ≤ 0.5 m (4 voxels) tall are stepped over automatically when walking forward into them
-- [ ] Obstacles > 0.5 m tall behave as walls and block movement (require jumping)
-- [ ] Player cannot walk off the edge of the world — AABB stays within the tree bounds
+- [x] WASD applies horizontal velocity at 6 m/s when Grounded, following the camera's horizontal facing direction
+- [x] Releasing all movement keys stops horizontal velocity immediately on the ground
+- [x] Walking forward into a wall stops the player at the wall surface (AABB does not penetrate occupied voxels)
+- [x] Walking diagonally into a wall slides along the wall surface rather than stopping entirely
+- [x] Swept-AABB stepping (≤ 0.3 m intervals) prevents tunneling through thin walls
+- [x] Obstacles ≤ 0.5 m (4 voxels) tall are stepped over automatically when walking forward into them
+- [x] Obstacles > 0.5 m tall behave as walls and block movement (require jumping)
+- [x] Player cannot walk off the edge of the world — AABB stays within the tree bounds
 
 ## 4. Jump + air control + terminal velocity
 

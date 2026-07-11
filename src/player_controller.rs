@@ -32,6 +32,22 @@ const GRAVITY: f32 = 20.0;
 const PLAYER_HALF_WIDTH: f32 = 0.3; // AABB half-width in XZ (total width = 0.6 m)
 const PLAYER_HEIGHT: f32 = 1.8;
 const EYE_OFFSET: f32 = 1.65;
+const GROUND_SPEED: f32 = 6.0;
+const STEP_HEIGHT: f32 = 0.5;
+
+/// Compute the player's body AABB min given the foot position.
+fn player_body_min(feet: Vec3) -> Vec3 {
+    Vec3::new(feet.x - PLAYER_HALF_WIDTH, feet.y, feet.z - PLAYER_HALF_WIDTH)
+}
+
+/// Compute the player's body AABB max given the foot position.
+fn player_body_max(feet: Vec3) -> Vec3 {
+    Vec3::new(
+        feet.x + PLAYER_HALF_WIDTH,
+        feet.y + PLAYER_HEIGHT,
+        feet.z + PLAYER_HALF_WIDTH,
+    )
+}
 
 pub struct PlayerController {
     pub speed: f32,
@@ -94,92 +110,195 @@ impl PlayerController {
 
     /// Run one physics tick (60 Hz) for FPS mode.
     ///
-    /// Handles gravity, ground detection via body AABB collision first
-    /// (for solid ground push-up), then ground slab check (for lattice
-    /// / partial support detection).
-    pub fn physics_tick(&mut self, tree: Option<&GpuTree64>) {
+    /// Handles gravity, WASD input, collision resolution (Y→X→Z priority
+    /// with swept steps ≤ 0.3 m), step-up for obstacles ≤ 0.5 m, and ground
+    /// detection.
+    pub fn physics_tick(&mut self, tree: Option<&GpuTree64>, keys: &HashSet<Key<SmolStr>>) {
         if self.control_mode != ControlMode::Fps {
             return;
         }
 
-        // Apply gravity.
+        // ---- gravity ----
         if !self.is_grounded {
             self.velocity.y -= GRAVITY * TICK_DURATION.as_secs_f32();
         }
 
-        // Integrate velocity into candidate position.
-        let new_pos = self.translation + self.velocity * TICK_DURATION.as_secs_f32();
+        // ---- WASD horizontal input ----
+        let view_inv = self.view().inverse();
+        let abs_forward = view_inv.transform_vector3(-Vec3::Z);
+        let forward = vec3(abs_forward.x, 0.0, abs_forward.z).normalize_or_zero();
+        let right = view_inv.transform_vector3(Vec3::X);
 
-        let body_min = Vec3::new(
-            new_pos.x - PLAYER_HALF_WIDTH,
-            new_pos.y,
-            new_pos.z - PLAYER_HALF_WIDTH,
-        );
-        let body_max = Vec3::new(
-            new_pos.x + PLAYER_HALF_WIDTH,
-            new_pos.y + PLAYER_HEIGHT,
-            new_pos.z + PLAYER_HALF_WIDTH,
-        );
-
-        // 1. Body collision: push up if intersecting solid ground.
-        let body_collision = tree.and_then(|t| {
-            match query::aabb_collides(t, body_min, body_max) {
-                CollisionResult::Blocked {
-                    penetration_y, ..
-                } => Some(penetration_y),
-                CollisionResult::Clear => None,
+        if self.is_grounded {
+            // Ground: instant 6 m/s.
+            if keys.contains(&FORWARD) {
+                self.velocity.x = forward.x * GROUND_SPEED;
+                self.velocity.z = forward.z * GROUND_SPEED;
+            } else if keys.contains(&BACKWARD) {
+                self.velocity.x = -forward.x * GROUND_SPEED;
+                self.velocity.z = -forward.z * GROUND_SPEED;
+            } else if keys.contains(&RIGHT) {
+                self.velocity.x = right.x * GROUND_SPEED;
+                self.velocity.z = right.z * GROUND_SPEED;
+            } else if keys.contains(&LEFT) {
+                self.velocity.x = -right.x * GROUND_SPEED;
+                self.velocity.z = -right.z * GROUND_SPEED;
+            } else {
+                self.velocity.x = 0.0;
+                self.velocity.z = 0.0;
             }
-        });
+        }
+        // Air control will be added in ticket 4.
 
-        if let Some(push_up) = body_collision {
-            // Body intersects voxels — snap up to clear them and ground.
-            self.translation = new_pos + Vec3::new(0.0, push_up, 0.0);
-            self.is_grounded = true;
-            self.velocity.y = 0.0;
+        // ---- integrate with swept collision resolution ----
+        let dt = TICK_DURATION.as_secs_f32();
+        let total_disp = self.velocity * dt;
+
+        // Sweep at most 0.3 m per step.
+        const MAX_STEP: f32 = 0.3;
+        let steps = (total_disp.length() / MAX_STEP).ceil() as usize;
+        let step_disp = if steps > 0 {
+            total_disp / steps as f32
         } else {
-            // 2. Ground slab below feet: detect partial support (lattice, beam edge).
-            let slab_min = Vec3::new(body_min.x, body_min.y - 1.0, body_min.z);
-            let slab_max = Vec3::new(body_max.x, body_min.y, body_max.z);
+            total_disp
+        };
 
-            let slab_hit = tree.is_some_and(|t| {
-                matches!(
-                    query::aabb_collides(t, slab_min, slab_max),
-                    CollisionResult::Blocked { .. }
-                )
+        let mut pos = self.translation;
+
+        for _ in 0..steps {
+            let candidate = pos + step_disp;
+
+            let body_min = player_body_min(candidate);
+            let body_max = player_body_max(candidate);
+
+            let collision = tree.and_then(|t| match query::aabb_collides(t, body_min, body_max) {
+                CollisionResult::Blocked {
+                    penetration_x,
+                    penetration_neg_x,
+                    penetration_y,
+                    penetration_neg_y,
+                    penetration_z,
+                    penetration_neg_z,
+                } => Some((penetration_x, penetration_neg_x, penetration_y, penetration_neg_y, penetration_z, penetration_neg_z)),
+                CollisionResult::Clear => None,
             });
 
-            if slab_hit {
-                // Body is clear but slab detects voxels in the 1-voxel zone
-                // below the feet. Snap the player down so the body just rests
-                // on top of the surface: test the body shifted 1 voxel lower,
-                // then push it up by the penetration.
-                let low_y = new_pos.y - 1.0;
-                let low_min = Vec3::new(body_min.x, low_y, body_min.z);
-                let low_max = Vec3::new(body_max.x, low_y + PLAYER_HEIGHT, body_max.z);
+            let Some((px, nx, py, ny, pz, nz)) = collision else {
+                // No collision — accept the step.
+                pos = candidate;
+                continue;
+            };
 
-                let snap_y = if let Some(t) = tree {
-                    match query::aabb_collides(t, low_min, low_max) {
-                        CollisionResult::Blocked { penetration_y, .. } => {
-                            // Body shifted down intersects: snap to surface top.
-                            low_y + penetration_y
-                        }
-                        CollisionResult::Clear => {
-                            // Lattice / partial support: stay at current position.
-                            new_pos.y
-                        }
-                    }
-                } else {
-                    new_pos.y
+            // ---- resolve: smallest-penetration depenetration ----
+            let mut resolved = candidate;
+
+            if let Some(t) = tree {
+                let is_clear = |p: Vec3| -> bool {
+                    matches!(
+                        query::aabb_collides(t, player_body_min(p), player_body_max(p)),
+                        CollisionResult::Clear
+                    )
                 };
 
-                self.translation = Vec3::new(new_pos.x, snap_y, new_pos.z);
-                self.is_grounded = true;
-                self.velocity.y = 0.0;
-            } else {
-                // No support anywhere — airborne.
-                self.is_grounded = false;
-                self.translation = new_pos;
+                // Find the smallest penetration and resolve along that axis.
+                let mut best_dirs = [(py, 0u8), (ny, 1), (px, 2), (nx, 3), (pz, 4), (nz, 5)];
+                best_dirs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                for &(dist, dir) in &best_dirs {
+                    let mut test = resolved;
+                    match dir {
+                        0 => test.y += dist, // +Y
+                        1 => test.y -= dist, // -Y
+                        2 => test.x += dist, // +X
+                        3 => test.x -= dist, // -X
+                        4 => test.z += dist, // +Z
+                        5 => test.z -= dist, // -Z
+                        _ => unreachable!(),
+                    }
+                    if is_clear(test) {
+                        resolved = test;
+                        break;
+                    }
+                }
+
+                // Step-up: if still blocked, try raising and re-resolving.
+                if !is_clear(resolved) {
+                    let su = Vec3::new(resolved.x, resolved.y + STEP_HEIGHT, resolved.z);
+                    if is_clear(su) {
+                        // Try horizontal movement from elevated position.
+                        let su_fwd = Vec3::new(su.x + step_disp.x, su.y, su.z + step_disp.z);
+                        if is_clear(su_fwd) {
+                            resolved = su_fwd;
+                        } else {
+                            let su_x = Vec3::new(su.x + step_disp.x, su.y, su.z);
+                            if is_clear(su_x) {
+                                resolved = su_x;
+                            } else {
+                                resolved = su;
+                            }
+                        }
+                    }
+                }
             }
+
+            pos = resolved;
+        }
+
+        // ---- ground detection at final position ----
+
+        // Clamp to tree bounds.
+        if let Some(t) = tree {
+            let world_size = (1u64 << t.tree_scale) as f32;
+            let ox = t.root_offset[0] as f32;
+            let oy = t.root_offset[1] as f32;
+            let oz = t.root_offset[2] as f32;
+            pos.x = pos.x.clamp(ox + PLAYER_HALF_WIDTH, ox + world_size - PLAYER_HALF_WIDTH);
+            pos.y = pos.y.clamp(oy, oy + world_size - PLAYER_HEIGHT);
+            pos.z = pos.z.clamp(oz + PLAYER_HALF_WIDTH, oz + world_size - PLAYER_HALF_WIDTH);
+        }
+
+        let body_min = player_body_min(pos);
+        let body_max = player_body_max(pos);
+
+        let ground_hit = tree.is_some_and(|t| {
+            let slab_min = Vec3::new(body_min.x, body_min.y - 1.0, body_min.z);
+            let slab_max = Vec3::new(body_max.x, body_min.y, body_max.z);
+            matches!(
+                query::aabb_collides(t, slab_min, slab_max),
+                CollisionResult::Blocked { .. }
+            )
+        });
+
+        if ground_hit {
+            self.is_grounded = true;
+            self.velocity.y = 0.0;
+
+            // Snap to surface.
+            if let Some(t) = tree {
+                match query::aabb_collides(t, body_min, body_max) {
+                    CollisionResult::Blocked { penetration_y, .. } => {
+                        // Body intersects: push up.
+                        pos.y += penetration_y;
+                    }
+                    CollisionResult::Clear => {
+                        // Body is clear but slab detects ground. Snap down
+                        // to the surface: test body shifted 1 voxel lower.
+                        let low_y = pos.y - 1.0;
+                        let low_min = Vec3::new(body_min.x, low_y, body_min.z);
+                        let low_max = Vec3::new(body_max.x, low_y + PLAYER_HEIGHT, body_max.z);
+                        if let CollisionResult::Blocked { penetration_y, .. } =
+                            query::aabb_collides(t, low_min, low_max)
+                        {
+                            pos.y = low_y + penetration_y;
+                        }
+                    }
+                }
+            }
+
+            self.translation = pos;
+        } else {
+            self.is_grounded = false;
+            self.translation = pos;
         }
 
         self.needs_view_update = true;
@@ -269,8 +388,9 @@ mod tests {
         tree: Option<&GpuTree64>,
         n: usize,
     ) {
+        let empty_keys = HashSet::new();
         for _ in 0..n {
-            controller.physics_tick(tree);
+            controller.physics_tick(tree, &empty_keys);
         }
     }
 
@@ -327,7 +447,7 @@ mod tests {
         let dt = TICK_DURATION.as_secs_f32();
         let expected_vy = -GRAVITY * dt;
 
-        ctrl.physics_tick(None);
+        ctrl.physics_tick(None, &HashSet::new());
         assert!((ctrl.velocity.y - expected_vy).abs() < 1e-5);
     }
 
@@ -340,7 +460,7 @@ mod tests {
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = true;
 
-        ctrl.physics_tick(Some(&tree));
+        ctrl.physics_tick(Some(&tree), &HashSet::new());
         // Still grounded, velocity still zero.
         assert!(ctrl.is_grounded);
         assert_eq!(ctrl.velocity.y, 0.0);
@@ -368,20 +488,30 @@ mod tests {
 
     #[test]
     fn becomes_airborne_when_no_ground_below() {
-        let tree = ground_plane();
+        // Build a tree with floor only on one side, so moving off it
+        // makes the player airborne.
+        let mut voxels = Vec::new();
+        for x in 0..2u32 {
+            for z in 0..4u32 {
+                voxels.push(([x, 0, z], 1u8));
+            }
+        }
+        let tree = build_tree(&voxels, 4);
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        // Start grounded on the floor.
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
-        ctrl.velocity = Vec3::ZERO;
+        ctrl.translation = Vec3::new(1.0, 1.0, 2.0);
+        ctrl.velocity = Vec3::new(2.0, 0.0, 0.0);
         ctrl.is_grounded = true;
 
-        // Move off the edge: the 4×4 floor covers x=0..4, z=0..4.
-        // Move to x=5 which is off the edge.
-        ctrl.translation.x = 5.0;
+        // Move right off the edge. The floor only covers x=[0,2).
+        let mut keys = HashSet::new();
+        keys.insert(RIGHT.clone());
+        for _ in 0..30 {
+            ctrl.physics_tick(Some(&tree), &keys);
+        }
 
-        ctrl.physics_tick(Some(&tree));
-        assert!(!ctrl.is_grounded);
+        // Should now be airborne since no ground under feet.
+        assert!(!ctrl.is_grounded, "Expected airborne, player at {}", ctrl.translation);
     }
 
     #[test]
@@ -453,5 +583,106 @@ mod tests {
 
         let cam_pos = ctrl.camera_position();
         assert_eq!(cam_pos, ctrl.translation);
+    }
+
+    // ---- WASD movement tests ----
+
+    /// Build a wall at x=4 (one column of voxels).
+    fn wall_at_x4() -> GpuTree64 {
+        let mut voxels = Vec::new();
+        for y in 0..4u32 {
+            for z in 0..8u32 {
+                voxels.push(([4, y, z], 1u8));
+            }
+        }
+        build_tree(&voxels, 8)
+    }
+
+    #[test]
+    fn wasd_applies_velocity_when_grounded() {
+        let tree = ground_plane();
+        let mut ctrl = PlayerController::default();
+        ctrl.control_mode = ControlMode::Fps;
+        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.velocity = Vec3::ZERO;
+        ctrl.is_grounded = true;
+
+        let mut keys = HashSet::new();
+        keys.insert(FORWARD.clone());
+
+        ctrl.physics_tick(Some(&tree), &keys);
+
+        assert!(ctrl.is_grounded);
+        // Forward should apply 6 m/s in the camera's forward direction.
+        assert!(ctrl.velocity.x.abs() > 0.01 || ctrl.velocity.z.abs() > 0.01);
+    }
+
+    #[test]
+    fn releasing_keys_stops_horizontal() {
+        let tree = ground_plane();
+        let mut ctrl = PlayerController::default();
+        ctrl.control_mode = ControlMode::Fps;
+        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.velocity = Vec3::new(3.0, 0.0, 0.0);
+        ctrl.is_grounded = true;
+
+        ctrl.physics_tick(Some(&tree), &HashSet::new());
+
+        // Horizontal velocity should be zero after tick with no keys.
+        assert_eq!(ctrl.velocity.x, 0.0);
+        assert_eq!(ctrl.velocity.z, 0.0);
+    }
+
+    #[test]
+    fn walking_into_wall_stops_at_surface() {
+        let tree = wall_at_x4();
+        let mut ctrl = PlayerController::default();
+        ctrl.control_mode = ControlMode::Fps;
+        // Stand on ground at y=1, near wall at x=4.
+        ctrl.translation = Vec3::new(3.5, 1.0, 4.0);
+        ctrl.velocity = Vec3::ZERO;
+        ctrl.is_grounded = true;
+
+        let mut keys = HashSet::new();
+        keys.insert(RIGHT.clone()); // Move in +X direction (right)
+
+        // Run many ticks to push against wall.
+        for _ in 0..60 {
+            ctrl.physics_tick(Some(&tree), &keys);
+        }
+
+        // Player should not penetrate the wall at x=4.
+        // Body right edge = translation.x + PLAYER_HALF_WIDTH = x + 0.3.
+        // Wall voxel at x=4 occupies [4, 5). Body should stop before 4.
+        assert!(
+            ctrl.translation.x + PLAYER_HALF_WIDTH <= 4.0 + 0.01,
+            "player right edge {} should be <= 4.0",
+            ctrl.translation.x + PLAYER_HALF_WIDTH
+        );
+    }
+
+    #[test]
+    fn walks_within_tree_bounds() {
+        let tree = ground_plane(); // 4×4 floor covering [0,4)×[0,1)×[0,4)
+        let mut ctrl = PlayerController::default();
+        ctrl.control_mode = ControlMode::Fps;
+        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.velocity = Vec3::new(10.0, 0.0, 0.0);
+        ctrl.is_grounded = true;
+
+        // Keys include RIGHT to keep moving right.
+        let mut keys = HashSet::new();
+        keys.insert(RIGHT.clone());
+
+        // Run many ticks — player should not leave the tree bounds.
+        for _ in 0..120 {
+            ctrl.physics_tick(Some(&tree), &keys);
+        }
+
+        // Check body stays within world bounds [0, 4).
+        assert!(ctrl.translation.x - PLAYER_HALF_WIDTH >= -0.01);
+        assert!(ctrl.translation.x + PLAYER_HALF_WIDTH <= 4.0 + 0.01);
+        assert!(ctrl.translation.z - PLAYER_HALF_WIDTH >= -0.01);
+        assert!(ctrl.translation.z + PLAYER_HALF_WIDTH <= 4.0 + 0.01);
     }
 }
