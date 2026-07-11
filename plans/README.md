@@ -13,7 +13,7 @@ honor its STOP conditions, and update your row when done.
 | 003  | Chunked world architecture — binary format, bake tool, multi-chunk rendering | P1 | L | — | DONE |
 | 004  | Add color palette from .vox file to .world format and GPU rendering | P1 | M | — | DONE |
 | 005  | Replace tree64 with dense 3D-texture DDA ray marcher | P1 | L | — | REJECTED |
-| 006  | Build Tree64 GPU data from occupied voxels | P1 | L | — | TODO |
+| 006  | Build Tree64 GPU data from occupied voxels | P1 | L | — | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 

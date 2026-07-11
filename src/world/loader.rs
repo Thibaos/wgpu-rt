@@ -6,136 +6,9 @@ use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
 use crate::formats::WorldFile;
-use crate::tree64_renderer::GpuTree64;
+use crate::tree64_builder::build_gpu_tree;
 
-// ---- block-based VoxelModel (avoids 68B dead HashMap lookups) ----
-
-/// Side length of one dense block in voxels. 16³ = 4096 voxels per block.
-const BLOCK_SIZE: u32 = 16;
-const BLOCK_VOXELS: usize = (BLOCK_SIZE * BLOCK_SIZE * BLOCK_SIZE) as usize; // 4096
-const BLOCK_BITS: usize = BLOCK_VOXELS / 64; // 64 u64s = 4096 bits
-
-struct BlockData {
-    colors: [u8; BLOCK_VOXELS],
-    occupied: [u64; BLOCK_BITS],
-}
-
-/// A VoxelModel backed by dense 16³ blocks.  Every `access()` call costs:
-///   1. shift+div to get block index → array lookup
-///   2. bit test on the occupancy-mask
-///   3. read the u8 colour  (all cheap, no hashing)
-///
-/// Blocks that contain no voxels are `None` — access returns `None` immediately.
-struct SparseBlocks {
-    blocks: Vec<Option<Box<BlockData>>>,
-    blocks_per_axis: u32,
-    dims: [u32; 3],
-}
-
-impl SparseBlocks {
-    fn from_world_voxels(
-        voxels: &HashMap<(i32, i32, i32), u8>,
-        origin: IVec3,
-        tree_dim: u32,
-    ) -> Self {
-        let blocks_per_axis = tree_dim / BLOCK_SIZE;
-        let total_blocks = (blocks_per_axis * blocks_per_axis * blocks_per_axis) as usize;
-
-        let t = Instant::now();
-        let mut blocks: Vec<Option<Box<BlockData>>> = Vec::with_capacity(total_blocks);
-        blocks.resize_with(total_blocks, || None);
-
-        for (&(wx, wy, wz), &color) in voxels {
-            let lx = (wx - origin.x) as u32;
-            let ly = (wy - origin.y) as u32;
-            let lz = (wz - origin.z) as u32;
-
-            debug_assert!(lx < tree_dim && ly < tree_dim && lz < tree_dim);
-
-            let bx = lx / BLOCK_SIZE;
-            let by = ly / BLOCK_SIZE;
-            let bz = lz / BLOCK_SIZE;
-            let block_idx =
-                (bx + by * blocks_per_axis + bz * blocks_per_axis * blocks_per_axis) as usize;
-
-            let block = blocks[block_idx].get_or_insert_with(|| {
-                Box::new(BlockData {
-                    colors: [0u8; BLOCK_VOXELS],
-                    occupied: [0u64; BLOCK_BITS],
-                })
-            });
-
-            let il = (lx % BLOCK_SIZE) as usize;
-            let jl = (ly % BLOCK_SIZE) as usize;
-            let kl = (lz % BLOCK_SIZE) as usize;
-            let local =
-                il + jl * BLOCK_SIZE as usize + kl * BLOCK_SIZE as usize * BLOCK_SIZE as usize;
-
-            block.colors[local] = color;
-            block.occupied[local / 64] |= 1 << (local % 64);
-        }
-
-        log::info!(
-            "Packed {} voxels into {} blocks ({:.2}s)",
-            voxels.len(),
-            blocks.iter().filter(|b| b.is_some()).count(),
-            t.elapsed().as_secs_f32(),
-        );
-
-        Self {
-            blocks,
-            blocks_per_axis,
-            dims: [tree_dim; 3],
-        }
-    }
-
-    /// Number of non-empty blocks (for logging).
-    #[allow(unused)]
-    fn occupied_block_count(&self) -> usize {
-        self.blocks.iter().filter(|b| b.is_some()).count()
-    }
-}
-
-impl tree64::VoxelModel<u8> for &SparseBlocks {
-    fn dimensions(&self) -> [u32; 3] {
-        self.dims
-    }
-
-    #[inline]
-    fn access(&self, coord: [usize; 3]) -> Option<u8> {
-        let x = coord[0] as u32;
-        let y = coord[1] as u32;
-        let z = coord[2] as u32;
-
-        // Bounds check — cheap, handles coordinates that tree64 rounds up beyond
-        // the actual scene extent.
-        if x >= self.dims[0] || y >= self.dims[1] || z >= self.dims[2] {
-            return None;
-        }
-
-        let bx = x / BLOCK_SIZE;
-        let by = y / BLOCK_SIZE;
-        let bz = z / BLOCK_SIZE;
-
-        let block_idx = (bx
-            + by * self.blocks_per_axis
-            + bz * self.blocks_per_axis * self.blocks_per_axis) as usize;
-
-        let block = self.blocks[block_idx].as_ref()?;
-
-        let il = (x % BLOCK_SIZE) as usize;
-        let jl = (y % BLOCK_SIZE) as usize;
-        let kl = (z % BLOCK_SIZE) as usize;
-        let local = il + jl * BLOCK_SIZE as usize + kl * BLOCK_SIZE as usize * BLOCK_SIZE as usize;
-
-        if block.occupied[local / 64] & (1 << (local % 64)) == 0 {
-            return None;
-        }
-        Some(block.colors[local])
-    }
-}
-
-// ---- scene graph traversal (unchanged) ----
+// ---- scene graph traversal ----
 
 struct ModelInstance<'a> {
     transform: Mat4,
@@ -145,11 +18,14 @@ struct ModelInstance<'a> {
 pub struct SceneGraphLoader;
 
 impl SceneGraphLoader {
-    pub fn load(vox_data: &DotVoxData, palette: [[u8; 4]; 256]) -> WorldFile {
+    pub fn load(vox_data: DotVoxData, palette: [[u8; 4]; 256]) -> WorldFile {
         let t_total = Instant::now();
 
-        let instances = Self::collect_instances(vox_data);
+        let instances = Self::collect_instances(&vox_data);
         let all_voxels = Self::collect_all_voxels(&instances);
+        // Release the scene graph borrows before building the tree.
+        drop(instances);
+        drop(vox_data);
         let world = Self::build_world_file(all_voxels, palette);
 
         log::info!("Total bake time: {:.2}s", t_total.elapsed().as_secs_f32());
@@ -338,11 +214,12 @@ impl SceneGraphLoader {
         );
         offset = quat.mul_vec3a(offset);
 
-        let center = quat * Vec3A::new(
-            size.x as f32 / 2.0,
-            size.y as f32 / 2.0,
-            size.z as f32 / 2.0,
-        );
+        let center = quat
+            * Vec3A::new(
+                size.x as f32 / 2.0,
+                size.y as f32 / 2.0,
+                size.z as f32 / 2.0,
+            );
 
         Mat4::from_scale_rotation_translation(
             scale.into(),
@@ -442,24 +319,27 @@ impl SceneGraphLoader {
             t_aabb.elapsed().as_secs_f32(),
         );
 
-        // --- 3. pack into dense blocks (local coords relative to aabb_min) ---
-        let blocks = SparseBlocks::from_world_voxels(&voxels, aabb_min, tree_dim);
-        drop(voxels);
-
-        // --- 4. build tree on the smaller volume ---
+        // --- 3. convert to local coordinates and build GPU tree directly ---
         let t_tree = Instant::now();
-        let tree = tree64::Tree64::new(&blocks);
+        let local_voxels = voxels.into_iter().map(|((x, y, z), value)| {
+            let local = [
+                u32::try_from(x - aabb_min.x).expect("x coordinate outside AABB"),
+                u32::try_from(y - aabb_min.y).expect("y coordinate outside AABB"),
+                u32::try_from(z - aabb_min.z).expect("z coordinate outside AABB"),
+            ];
+            (local, value)
+        });
+
+        let gpu_tree = build_gpu_tree(local_voxels, tree_dim, aabb_min.to_array())
+            .expect("failed to build occupancy-driven GPU tree");
+
         log::info!(
-            "Tree built: {} nodes, {} bytes leaf data, {} levels ({:.2}s)",
-            tree.nodes.len(),
-            tree.data.len(),
-            tree.root_state().num_levels,
+            "GPU tree built: {} nodes, {} bytes leaf data, tree_scale={} ({:.2}s)",
+            gpu_tree.nodes.len(),
+            gpu_tree.leaf_data.len(),
+            gpu_tree.tree_scale,
             t_tree.elapsed().as_secs_f32(),
         );
-
-        // --- 5. convert to GPU tree, fix up world-space offset ---
-        let mut gpu_tree = GpuTree64::from_tree64(&tree);
-        gpu_tree.root_offset = [aabb_min.x, aabb_min.y, aabb_min.z];
 
         log::info!(
             "GPU tree: root_offset=({},{},{})",
