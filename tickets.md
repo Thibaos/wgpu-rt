@@ -54,13 +54,13 @@ Work the **frontier**: any ticket whose blockers are all done. For a purely line
 
 **Blocked by:** 3. WASD movement + wall collision + step-up
 
-- [ ] Space applies an 8 m/s upward velocity impulse when Grounded and transitions to Airborne
-- [ ] Space has no effect when already Airborne (no double jump)
-- [ ] In Airborne, WASD applies horizontal acceleration at 50% of ground rate (3 m/s² effective)
-- [ ] Airborne horizontal velocity persists without friction (no damping when keys are released mid-air)
-- [ ] Downward velocity is capped at 50 m/s
-- [ ] Upward velocity is capped at 30 m/s
-- [ ] Landing from a jump or fall transitions back to Grounded on the next tick after ground contact
+- [x] Space applies an 8 m/s upward velocity impulse when Grounded and transitions to Airborne
+- [x] Space has no effect when already Airborne (no double jump)
+- [x] In Airborne, WASD applies horizontal acceleration at 50% of ground rate (3 m/s² effective)
+- [x] Airborne horizontal velocity persists without friction (no damping when keys are released mid-air)
+- [x] Downward velocity is capped at 50 m/s
+- [x] Upward velocity is capped at 30 m/s
+- [x] Landing from a jump or fall transitions back to Grounded on the next tick after ground contact
 
 ## 5. Fly/FPS toggle with F1
 
@@ -68,9 +68,9 @@ Work the **frontier**: any ticket whose blockers are all done. For a purely line
 
 **Blocked by:** 2. Physics loop + gravity + ground
 
-- [ ] F1 toggles between Fly and FPS control modes
-- [ ] Fly mode replicates the existing flying camera behavior (WASD + Space/Ctrl for full 3D movement, no gravity, no collision)
-- [ ] FPS mode uses the new physics (gravity, ground detection, collision, jump)
-- [ ] Switching from FPS to Fly zeroes velocity and keeps the camera at its current position
-- [ ] Switching from Fly to FPS starts the player Airborne at the current position with zero velocity, then gravity takes over
-- [ ] Mouse look (yaw/pitch) works identically in both modes
+- [x] F1 toggles between Fly and FPS control modes
+- [x] Fly mode replicates the existing flying camera behavior (WASD + Space/Ctrl for full 3D movement, no gravity, no collision)
+- [x] FPS mode uses the new physics (gravity, ground detection, collision, jump)
+- [x] Switching from FPS to Fly zeroes velocity and keeps the camera at its current position
+- [x] Switching from Fly to FPS starts the player Airborne at the current position with zero velocity, then gravity takes over
+- [x] Mouse look (yaw/pitch) works identically in both modes

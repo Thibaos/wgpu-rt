@@ -305,6 +305,11 @@ impl ApplicationHandler for Framework {
                         }
                     }
                 }
+                if let Key::Named(NamedKey::F1) = &logical_key
+                    && !self.pressed_keys.contains(&Key::Named(NamedKey::F1))
+                {
+                    app.player_controller.toggle_control_mode();
+                }
                 self.pressed_keys.insert(logical_key);
             }
             WindowEvent::KeyboardInput {

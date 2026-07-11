@@ -19,6 +19,9 @@ const RIGHT: Key = Key::Character(SmolStr::new_static("d"));
 const UP: Key = Key::Named(NamedKey::Space);
 const CONTROL: Key = Key::Named(NamedKey::Control);
 
+/// Key used for jumping in FPS mode.
+const JUMP_KEY: Key = Key::Named(NamedKey::Space);
+
 /// Control mode for the player controller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ControlMode {
@@ -34,6 +37,9 @@ const PLAYER_HEIGHT: f32 = 1.8;
 const EYE_OFFSET: f32 = 1.65;
 const GROUND_SPEED: f32 = 6.0;
 const STEP_HEIGHT: f32 = 0.5;
+const TERMINAL_DOWN: f32 = 50.0;
+const TERMINAL_UP: f32 = 30.0;
+const JUMP_IMPULSE: f32 = 8.0;
 
 /// Compute the player's body AABB min given the foot position.
 fn player_body_min(feet: Vec3) -> Vec3 {
@@ -123,6 +129,15 @@ impl PlayerController {
             self.velocity.y -= GRAVITY * TICK_DURATION.as_secs_f32();
         }
 
+        // ---- terminal velocity ----
+        self.velocity.y = self.velocity.y.clamp(-TERMINAL_DOWN, TERMINAL_UP);
+
+        // ---- jump ----
+        if self.is_grounded && keys.contains(&JUMP_KEY) {
+            self.velocity.y = JUMP_IMPULSE;
+            self.is_grounded = false;
+        }
+
         // ---- WASD horizontal input ----
         let view_inv = self.view().inverse();
         let abs_forward = view_inv.transform_vector3(-Vec3::Z);
@@ -147,8 +162,26 @@ impl PlayerController {
                 self.velocity.x = 0.0;
                 self.velocity.z = 0.0;
             }
+        } else {
+            // Air: 50% acceleration, no friction.
+            let air_accel = GROUND_SPEED * 0.5 * TICK_DURATION.as_secs_f32();
+            if keys.contains(&FORWARD) {
+                self.velocity.x += forward.x * air_accel;
+                self.velocity.z += forward.z * air_accel;
+            }
+            if keys.contains(&BACKWARD) {
+                self.velocity.x -= forward.x * air_accel;
+                self.velocity.z -= forward.z * air_accel;
+            }
+            if keys.contains(&RIGHT) {
+                self.velocity.x += right.x * air_accel;
+                self.velocity.z += right.z * air_accel;
+            }
+            if keys.contains(&LEFT) {
+                self.velocity.x -= right.x * air_accel;
+                self.velocity.z -= right.z * air_accel;
+            }
         }
-        // Air control will be added in ticket 4.
 
         // ---- integrate with swept collision resolution ----
         let dt = TICK_DURATION.as_secs_f32();
@@ -373,6 +406,25 @@ impl PlayerController {
         } else {
             self.speed /= 1.5;
         }
+    }
+
+    /// Toggle between Fly and FPS control modes.
+    pub fn toggle_control_mode(&mut self) {
+        match self.control_mode {
+            ControlMode::Fly => {
+                self.control_mode = ControlMode::Fps;
+                // Start airborne at current position with zero velocity.
+                self.velocity = Vec3::ZERO;
+                self.is_grounded = false;
+            }
+            ControlMode::Fps => {
+                self.control_mode = ControlMode::Fly;
+                // Zero velocity, keep position.
+                self.velocity = Vec3::ZERO;
+                self.is_grounded = false;
+            }
+        }
+        self.needs_view_update = true;
     }
 }
 
