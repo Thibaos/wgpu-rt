@@ -9,9 +9,9 @@ use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
-use crate::player_controller::PlayerController;
+use crate::player_controller::{self, PlayerController};
 use crate::tree64::World;
-use crate::tree64::renderer::{GpuTree64Buffers, create_palette_buffer};
+use crate::tree64::renderer::{GpuTree64, GpuTree64Buffers, create_palette_buffer};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -28,6 +28,9 @@ pub struct App {
     // Single tree bind group
     tree_bind_group: Option<wgpu::BindGroup>,
 
+    // Tree CPU data kept for collision queries
+    tree64: Option<GpuTree64>,
+
     // Tree GPU buffers (owned here, not by a chunk manager)
     tree_buffers: Option<GpuTree64Buffers>,
 
@@ -42,6 +45,7 @@ pub struct App {
     // Timing
     last_frame_update: Instant,
     delta_time: Duration,
+    physics_accumulator: Duration,
 
     // Surface size for projection
     surface_width: u32,
@@ -134,6 +138,9 @@ impl App {
         };
 
         let palette_buffer = create_palette_buffer(device, &world.palette);
+
+        // Take ownership of the CPU-side tree for collision queries.
+        let tree64 = world.tree;
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
@@ -237,7 +244,7 @@ impl App {
                 ],
             });
 
-        let (tree_buffers, tree_bind_group) = if let Some(ref tree) = world.tree {
+        let (tree_buffers, tree_bind_group) = if let Some(ref tree) = tree64 {
             let buffers = tree.create_buffers(device);
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("tree_bind_group"),
@@ -335,6 +342,7 @@ impl App {
         App {
             compute_pipeline,
             tree_bind_group,
+            tree64,
             tree_buffers,
             camera_buffer,
             player_controller,
@@ -342,6 +350,7 @@ impl App {
             blit_view_bind_group,
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
+            physics_accumulator: Duration::default(),
             surface_width: width,
             surface_height: height,
             rt_texture,
@@ -452,16 +461,21 @@ impl App {
         keys: &HashSet<Key<SmolStr>>,
     ) {
         self.update_delta_time();
+
+        // Accumulate time and run fixed-step physics ticks.
+        self.physics_accumulator += self.delta_time;
+        while self.physics_accumulator >= player_controller::TICK_DURATION {
+            self.player_controller
+                .physics_tick(self.tree64.as_ref());
+            self.physics_accumulator -= player_controller::TICK_DURATION;
+        }
+
         self.player_controller.fly_movement(self.delta_time, keys);
 
         let aspect = self.surface_width as f32 / self.surface_height as f32;
+        let camera_pos = self.player_controller.camera_position();
         let camera_uniforms = CameraUniforms {
-            pos: [
-                self.player_controller.translation.x,
-                self.player_controller.translation.y,
-                self.player_controller.translation.z,
-                1.0,
-            ],
+            pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
             view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
             proj_inv: glam::camera::rh::proj::vulkan::perspective(
                 70f32.to_radians(),

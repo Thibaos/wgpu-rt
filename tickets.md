@@ -24,14 +24,14 @@ Work the **frontier**: any ticket whose blockers are all done. For a purely line
 
 **Blocked by:** 1. Collision query module (`tree64::query`)
 
-- [ ] Main loop accumulates frame delta and dispatches physics ticks at 60 Hz before rendering
-- [ ] Gravity accelerates player downward at 20 m/s² each tick when Airborne
-- [ ] Ground detection checks the 1-voxel layer directly below the full player XZ footprint each tick
-- [ ] Player transitions to Grounded when any voxel is found in the ground-detection slab
-- [ ] Player transitions to Airborne when no voxel is found in the ground-detection slab
-- [ ] When Grounded, vertical velocity is zeroed and the player's Y position is snapped to the support surface
-- [ ] Player AABB (0.6 × 1.8 × 0.6 m) does not intersect any occupied voxel at rest on the ground
-- [ ] Camera renders at player position + 1.65 m eye offset
+- [x] Main loop accumulates frame delta and dispatches physics ticks at 60 Hz before rendering
+- [x] Gravity accelerates player downward at 20 m/s² each tick when Airborne
+- [x] Ground detection checks the 1-voxel layer directly below the full player XZ footprint each tick
+- [x] Player transitions to Grounded when any voxel is found in the ground-detection slab
+- [x] Player transitions to Airborne when no voxel is found in the ground-detection slab
+- [x] When Grounded, vertical velocity is zeroed and the player's Y position is snapped to the support surface
+- [x] Player AABB (0.6 × 1.8 × 0.6 m) does not intersect any occupied voxel at rest on the ground
+- [x] Camera renders at player position + 1.65 m eye offset
 
 ## 3. WASD movement + wall collision + step-up
 
