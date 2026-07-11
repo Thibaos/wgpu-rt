@@ -121,7 +121,7 @@ impl App {
         let world_path = std::env::current_dir()
             .unwrap_or_default()
             .join("assets")
-            .join("bistro.world");
+            .join("nuke.world");
 
         let world = if world_path.exists() {
             World::load(&world_path).expect("failed to load world file")

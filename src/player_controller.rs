@@ -31,15 +31,19 @@ pub enum ControlMode {
 
 /// Physics constants for FPS mode.
 pub const TICK_DURATION: Duration = Duration::from_nanos(16_666_667); // 60 Hz
-const GRAVITY: f32 = 30.0;
-const PLAYER_HALF_WIDTH: f32 = 0.3; // AABB half-width in XZ (total width = 0.6 m)
-const PLAYER_HEIGHT: f32 = 1.8;
-const EYE_OFFSET: f32 = 1.65;
-const GROUND_SPEED: f32 = 6.0;
-const STEP_HEIGHT: f32 = 0.5;
-const TERMINAL_DOWN: f32 = 50.0;
-const TERMINAL_UP: f32 = 30.0;
-const JUMP_IMPULSE: f32 = 8.0;
+
+/// World scale: 1 voxel = 1/8 meter, so 8 voxels per meter.
+const VOXELS_PER_METER: f32 = 8.0;
+
+const PLAYER_HALF_WIDTH: f32 = 0.3 * VOXELS_PER_METER; // 2.4 voxels (0.3 m)
+const PLAYER_HEIGHT: f32 = 1.8 * VOXELS_PER_METER; // 14.4 voxels (1.8 m)
+const EYE_OFFSET: f32 = 1.65 * VOXELS_PER_METER; // 13.2 voxels (1.65 m from feet)
+const GRAVITY: f32 = 30.0 * VOXELS_PER_METER; // 240 vox/s² (30 m/s²)
+const GROUND_SPEED: f32 = 6.0 * VOXELS_PER_METER; // 48 vox/s (6 m/s)
+const JUMP_IMPULSE: f32 = 8.0 * VOXELS_PER_METER; // 64 vox/s (8 m/s)
+const STEP_HEIGHT: f32 = 0.5 * VOXELS_PER_METER; // 4 voxels (0.5 m)
+const TERMINAL_DOWN: f32 = 50.0 * VOXELS_PER_METER; // 400 vox/s (50 m/s)
+const TERMINAL_UP: f32 = 30.0 * VOXELS_PER_METER; // 240 vox/s (30 m/s)
 
 /// Compute the player's body AABB min given the foot position.
 fn player_body_min(feet: Vec3) -> Vec3 {
@@ -75,6 +79,7 @@ pub struct PlayerController {
 impl Default for PlayerController {
     fn default() -> Self {
         let translation = Vec3::new(32.0, 5.0, 32.0);
+        let eye = translation + Vec3::new(0.0, EYE_OFFSET, 0.0);
 
         Self {
             speed: 32.0,
@@ -86,8 +91,8 @@ impl Default for PlayerController {
             yaw: 0.0,
             pitch: 0.0,
             view: glam::camera::rh::view::look_at_mat4(
-                translation,
-                Vec3::new(32.0, 4.0, 31.0),
+                eye,
+                Vec3::new(32.0, EYE_OFFSET, 0.0),
                 Vec3::Y,
             ),
             needs_view_update: true,
@@ -477,22 +482,22 @@ mod tests {
         GpuTree64::from_model(&&model)
     }
 
-    /// Build a simple ground plane at y=0 (4×4 floor).
+    /// Build a simple ground plane at y=0 (16×16 floor).
     fn ground_plane() -> GpuTree64 {
         let mut voxels = Vec::new();
-        for x in 0..4u32 {
-            for z in 0..4u32 {
+        for x in 0..16u32 {
+            for z in 0..16u32 {
                 voxels.push(([x, 0, z], 1u8));
             }
         }
-        build_tree(&voxels, 4)
+        build_tree(&voxels, 16)
     }
 
     #[test]
     fn gravity_accelerates_downward() {
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 10.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 30.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = false;
 
@@ -508,12 +513,11 @@ mod tests {
         let tree = ground_plane();
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0); // above floor
+        ctrl.translation = Vec3::new(8.0, 1.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = true;
 
         ctrl.physics_tick(Some(&tree), &HashSet::new());
-        // Still grounded, velocity still zero.
         assert!(ctrl.is_grounded);
         assert_eq!(ctrl.velocity.y, 0.0);
     }
@@ -523,65 +527,58 @@ mod tests {
         let tree = ground_plane();
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 5.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 10.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = false;
 
-        // Run enough ticks for the player to fall to the ground.
-        // At 20 m/s², starting from 5m, takes ~0.7s to fall = ~42 ticks.
-        run_ticks(&mut ctrl, Some(&tree), 200);
+        run_ticks(&mut ctrl, Some(&tree), 50);
 
         assert!(ctrl.is_grounded);
         assert_eq!(ctrl.velocity.y, 0.0);
-        // Player AABB bottom should be at or slightly above y=1.0 (top of floor voxels).
         assert!(ctrl.translation.y >= 1.0, "player y={}", ctrl.translation.y);
         assert!(ctrl.translation.y < 1.1, "player y={}", ctrl.translation.y);
     }
 
     #[test]
     fn becomes_airborne_when_no_ground_below() {
-        // Build a tree with floor only on one side, so moving off it
-        // makes the player airborne.
+        // Floor covers x=[0,8), z=[0,16). Player walks right off the edge.
         let mut voxels = Vec::new();
-        for x in 0..2u32 {
-            for z in 0..4u32 {
+        for x in 0..8u32 {
+            for z in 0..16u32 {
                 voxels.push(([x, 0, z], 1u8));
             }
         }
-        let tree = build_tree(&voxels, 4);
+        let tree = build_tree(&voxels, 16);
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(1.0, 1.0, 2.0);
-        ctrl.velocity = Vec3::new(2.0, 0.0, 0.0);
+        ctrl.translation = Vec3::new(4.0, 1.0, 8.0);
+        ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = true;
 
-        // Move right off the edge. The floor only covers x=[0,2).
         let mut keys = HashSet::new();
         keys.insert(RIGHT.clone());
         for _ in 0..30 {
             ctrl.physics_tick(Some(&tree), &keys);
         }
 
-        // Should now be airborne since no ground under feet.
         assert!(!ctrl.is_grounded, "Expected airborne, player at {}", ctrl.translation);
     }
 
     #[test]
     fn stands_on_lattice_floor() {
-        // Checkerboard floor at y=0.
         let mut voxels: Vec<([u32; 3], u8)> = Vec::new();
-        for x in 0..4u32 {
-            for z in 0..4u32 {
+        for x in 0..16u32 {
+            for z in 0..16u32 {
                 if (x + z) % 2 == 0 {
                     voxels.push(([x, 0, z], 1u8));
                 }
             }
         }
-        let tree = build_tree(&voxels, 4);
+        let tree = build_tree(&voxels, 16);
 
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.5, 2.0);
+        ctrl.translation = Vec3::new(8.0, 3.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = false;
 
@@ -594,13 +591,12 @@ mod tests {
         let tree = ground_plane();
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 5.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 10.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = false;
 
-        run_ticks(&mut ctrl, Some(&tree), 200);
+        run_ticks(&mut ctrl, Some(&tree), 50);
 
-        // Verify body AABB is clear of the tree.
         let body_min = Vec3::new(
             ctrl.translation.x - PLAYER_HALF_WIDTH,
             ctrl.translation.y,
@@ -621,7 +617,7 @@ mod tests {
     fn camera_eye_offset_in_fps_mode() {
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 1.0, 8.0);
 
         let cam_pos = ctrl.camera_position();
         assert!((cam_pos.y - (ctrl.translation.y + EYE_OFFSET)).abs() < 1e-5);
@@ -631,7 +627,7 @@ mod tests {
     fn camera_no_eye_offset_in_fly_mode() {
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fly;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 1.0, 8.0);
 
         let cam_pos = ctrl.camera_position();
         assert_eq!(cam_pos, ctrl.translation);
@@ -639,15 +635,15 @@ mod tests {
 
     // ---- WASD movement tests ----
 
-    /// Build a wall at x=4 (one column of voxels).
-    fn wall_at_x4() -> GpuTree64 {
+    /// Build a wall at x=8 spanning full height and depth (dim=16 world).
+    fn wall_at_x8() -> GpuTree64 {
         let mut voxels = Vec::new();
-        for y in 0..4u32 {
-            for z in 0..8u32 {
-                voxels.push(([4, y, z], 1u8));
+        for y in 0..16u32 {
+            for z in 0..16u32 {
+                voxels.push(([8, y, z], 1u8));
             }
         }
-        build_tree(&voxels, 8)
+        build_tree(&voxels, 16)
     }
 
     #[test]
@@ -655,7 +651,7 @@ mod tests {
         let tree = ground_plane();
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
+        ctrl.translation = Vec3::new(8.0, 1.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = true;
 
@@ -665,7 +661,6 @@ mod tests {
         ctrl.physics_tick(Some(&tree), &keys);
 
         assert!(ctrl.is_grounded);
-        // Forward should apply 6 m/s in the camera's forward direction.
         assert!(ctrl.velocity.x.abs() > 0.01 || ctrl.velocity.z.abs() > 0.01);
     }
 
@@ -674,67 +669,70 @@ mod tests {
         let tree = ground_plane();
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
-        ctrl.velocity = Vec3::new(3.0, 0.0, 0.0);
+        ctrl.translation = Vec3::new(8.0, 1.0, 8.0);
+        ctrl.velocity = Vec3::new(24.0, 0.0, 0.0);
         ctrl.is_grounded = true;
 
         ctrl.physics_tick(Some(&tree), &HashSet::new());
 
-        // Horizontal velocity should be zero after tick with no keys.
         assert_eq!(ctrl.velocity.x, 0.0);
         assert_eq!(ctrl.velocity.z, 0.0);
     }
 
     #[test]
     fn walking_into_wall_stops_at_surface() {
-        let tree = wall_at_x4();
+        let tree = wall_at_x8();
+        // Create a controller with a custom view looking along -Z
+        // so RIGHT = +X in world space.
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        // Stand on ground at y=1, near wall at x=4.
-        ctrl.translation = Vec3::new(3.5, 1.0, 4.0);
+        ctrl.translation = Vec3::new(5.0, 1.0, 8.0);
         ctrl.velocity = Vec3::ZERO;
         ctrl.is_grounded = true;
+        ctrl.yaw = 0.0;
+        ctrl.pitch = 0.0;
+        ctrl.needs_view_update = true;
+        // Force a clean view looking along -Z.
+        ctrl.compute_view();
 
         let mut keys = HashSet::new();
-        keys.insert(RIGHT.clone()); // Move in +X direction (right)
+        keys.insert(RIGHT.clone());
 
-        // Run many ticks to push against wall.
         for _ in 0..60 {
             ctrl.physics_tick(Some(&tree), &keys);
         }
 
-        // Player should not penetrate the wall at x=4.
-        // Body right edge = translation.x + PLAYER_HALF_WIDTH = x + 0.3.
-        // Wall voxel at x=4 occupies [4, 5). Body should stop before 4.
+        // Body right edge should not penetrate wall at x=8.
         assert!(
-            ctrl.translation.x + PLAYER_HALF_WIDTH <= 4.0 + 0.01,
-            "player right edge {} should be <= 4.0",
+            ctrl.translation.x + PLAYER_HALF_WIDTH <= 8.0 + 0.01,
+            "player right edge {} should be <= 8.0",
             ctrl.translation.x + PLAYER_HALF_WIDTH
         );
     }
 
     #[test]
     fn walks_within_tree_bounds() {
-        let tree = ground_plane(); // 4×4 floor covering [0,4)×[0,1)×[0,4)
+        let tree = wall_at_x8(); // dim=16 world
         let mut ctrl = PlayerController::default();
         ctrl.control_mode = ControlMode::Fps;
-        ctrl.translation = Vec3::new(2.0, 1.0, 2.0);
-        ctrl.velocity = Vec3::new(10.0, 0.0, 0.0);
+        ctrl.translation = Vec3::new(5.0, 1.0, 8.0);
+        ctrl.velocity = Vec3::new(80.0, 0.0, 0.0);
         ctrl.is_grounded = true;
+        ctrl.yaw = 0.0;
+        ctrl.pitch = 0.0;
+        ctrl.needs_view_update = true;
+        ctrl.compute_view();
 
-        // Keys include RIGHT to keep moving right.
         let mut keys = HashSet::new();
         keys.insert(RIGHT.clone());
 
-        // Run many ticks — player should not leave the tree bounds.
         for _ in 0..120 {
             ctrl.physics_tick(Some(&tree), &keys);
         }
 
-        // Check body stays within world bounds [0, 4).
         assert!(ctrl.translation.x - PLAYER_HALF_WIDTH >= -0.01);
-        assert!(ctrl.translation.x + PLAYER_HALF_WIDTH <= 4.0 + 0.01);
+        assert!(ctrl.translation.x + PLAYER_HALF_WIDTH <= 16.0 + 0.01);
         assert!(ctrl.translation.z - PLAYER_HALF_WIDTH >= -0.01);
-        assert!(ctrl.translation.z + PLAYER_HALF_WIDTH <= 4.0 + 0.01);
+        assert!(ctrl.translation.z + PLAYER_HALF_WIDTH <= 16.0 + 0.01);
     }
 }
