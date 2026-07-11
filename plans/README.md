@@ -12,6 +12,8 @@ honor its STOP conditions, and update your row when done.
 | 002  | Handle surface acquire timeout and outdated gracefully | P1 | S | — | DONE |
 | 003  | Chunked world architecture — binary format, bake tool, multi-chunk rendering | P1 | L | — | DONE |
 | 004  | Add color palette from .vox file to .world format and GPU rendering | P1 | M | — | DONE |
+| 005  | Replace tree64 with dense 3D-texture DDA ray marcher | P1 | L | — | REJECTED |
+| 006  | Build Tree64 GPU data from occupied voxels | P1 | L | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -28,6 +30,8 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 ## Dependency notes
 
 - 004 has no dependencies on other plans — 003 is already DONE.
+- 005 is an alternative renderer direction and is not a dependency of 006; it is not suitable for required 16384³ logical scenes unless its dense-volume constraints change.
+- 006 preserves the current Tree64 GPU/world format and removes the bake-time full-volume scan. It is independent of 005 and intentionally defers any future optimization of the transformed voxel map.
 
 ## Remaining findings (not yet planned)
 
@@ -39,3 +43,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | 6  | No README | Docs | P3 |
 | 7  | Unused VoxelRT shader files | Tech Debt | P3 |
 | 8  | Fragile string replace in build.rs | Tech Debt | P3 |
+
+## Additional plan notes
+
+- Plan 006 is the recommended next step for the `4096 → 16384` bake regression. It deliberately does not read or benchmark `assets/models/bistro.vox` during implementation.

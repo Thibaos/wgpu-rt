@@ -10,10 +10,7 @@ dot_vox = "5.2"
 env_logger = "0.11"
 glam = { version = "0.33", features = ["bytemuck"] }
 log = "0.4"
-noise = "0.9.0"
-png = "0.18"
-pollster = "0.4"
-rand = "0.10"
+pollster = "1"
 rayon = "1"
 tree64 = { git = "https://github.com/expenses/tree64", version = "0.1.0" }
 wgpu = "30"
