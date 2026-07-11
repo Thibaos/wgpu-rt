@@ -10,8 +10,8 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::tree64_renderer::GpuTree64Buffers;
-use crate::world::World;
+use crate::tree64::World;
+use crate::tree64::renderer::{GpuTree64Buffers, create_palette_buffer};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -133,7 +133,7 @@ impl App {
             }
         };
 
-        let palette_buffer = crate::tree64_renderer::create_palette_buffer(device, &world.palette);
+        let palette_buffer = create_palette_buffer(device, &world.palette);
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();

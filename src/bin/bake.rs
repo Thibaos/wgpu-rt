@@ -34,7 +34,7 @@ fn main() {
         vox_data.scenes.len(),
     );
 
-    let world_file = wgpu_rt::world::loader::SceneGraphLoader::load(vox_data, palette_array);
+    let world_file = wgpu_rt::tree64::loader::SceneGraphLoader::load(vox_data, palette_array);
 
     eprintln!("World loading done.");
 

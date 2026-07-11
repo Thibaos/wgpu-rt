@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::tree64_renderer::{GpuNode, GpuTree64};
+use super::renderer::{GpuNode, GpuTree64};
 
 /// Maximum pointer value that can be safely packed into `GpuNode`:
 /// `(ptr << 1) | is_leaf` must not overflow u32, so ptr < 2^31.

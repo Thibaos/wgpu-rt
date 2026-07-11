@@ -2,7 +2,7 @@
 
 use std::io::{self};
 
-use crate::tree64_renderer::GpuTree64;
+use crate::tree64::renderer::GpuTree64;
 
 pub const WORLD_MAGIC: [u8; 4] = *b"WRLD";
 pub const WORLD_VERSION: u32 = 3;
@@ -127,7 +127,7 @@ impl WorldFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tree64_renderer::{GpuNode, GpuTree64};
+    use crate::tree64::renderer::{GpuNode, GpuTree64};
     use std::io::Cursor;
 
     fn make_dummy_gpu_tree() -> GpuTree64 {

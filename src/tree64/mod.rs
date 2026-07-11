@@ -1,11 +1,13 @@
-pub mod loader;
-
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+mod builder;
+pub mod loader;
+pub mod renderer;
+
 use crate::formats::WorldFile;
-use crate::tree64_renderer::GpuTree64;
+use crate::tree64::renderer::GpuTree64;
 
 /// Loaded world state: a single tree covering the full world volume.
 pub struct World {

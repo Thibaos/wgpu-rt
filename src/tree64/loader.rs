@@ -5,8 +5,8 @@ use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
+use super::builder::build_gpu_tree;
 use crate::formats::WorldFile;
-use crate::tree64_builder::build_gpu_tree;
 
 // ---- scene graph traversal ----
 
