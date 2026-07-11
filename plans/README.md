@@ -14,6 +14,7 @@ honor its STOP conditions, and update your row when done.
 | 004  | Add color palette from .vox file to .world format and GPU rendering | P1 | M | — | DONE |
 | 005  | Replace tree64 with dense 3D-texture DDA ray marcher | P1 | L | — | REJECTED |
 | 006  | Build Tree64 GPU data from occupied voxels | P1 | L | — | DONE |
+| 007  | FPS player controller with world collision | P1 | L | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -47,3 +48,4 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 ## Additional plan notes
 
 - Plan 006 is the recommended next step for the `4096 → 16384` bake regression. It deliberately does not read or benchmark `assets/models/bistro.vox` during implementation.
+- Plan 007 was designed via grilling session and domain modeling (2026-07-11). See `CONTEXT.md` for the domain glossary and `docs/adr/0001-tree64-dual-use.md` for the architecture decision on using Tree64 for both GPU rendering and CPU collision.

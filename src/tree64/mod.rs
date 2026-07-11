@@ -4,6 +4,7 @@ use std::path::Path;
 
 mod builder;
 pub mod loader;
+pub mod query;
 pub mod renderer;
 
 use crate::formats::WorldFile;
