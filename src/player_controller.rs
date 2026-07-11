@@ -31,7 +31,7 @@ pub enum ControlMode {
 
 /// Physics constants for FPS mode.
 pub const TICK_DURATION: Duration = Duration::from_nanos(16_666_667); // 60 Hz
-const GRAVITY: f32 = 20.0;
+const GRAVITY: f32 = 30.0;
 const PLAYER_HALF_WIDTH: f32 = 0.3; // AABB half-width in XZ (total width = 0.6 m)
 const PLAYER_HEIGHT: f32 = 1.8;
 const EYE_OFFSET: f32 = 1.65;
@@ -74,7 +74,7 @@ pub struct PlayerController {
 
 impl Default for PlayerController {
     fn default() -> Self {
-        let translation = Vec3::new(32.0, 32.0, 80.0);
+        let translation = Vec3::new(32.0, 5.0, 32.0);
 
         Self {
             speed: 32.0,
@@ -87,7 +87,7 @@ impl Default for PlayerController {
             pitch: 0.0,
             view: glam::camera::rh::view::look_at_mat4(
                 translation,
-                Vec3::new(32.0, 16.0, 32.0),
+                Vec3::new(32.0, 4.0, 31.0),
                 Vec3::Y,
             ),
             needs_view_update: true,
