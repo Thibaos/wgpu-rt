@@ -1,14 +1,10 @@
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
 
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
-use super::builder::build_gpu_tree;
-use crate::formats::WorldFile;
-
-// ---- scene graph traversal ----
+use crate::world::{VoxelWorldData, World};
 
 struct ModelInstance<'a> {
     transform: Mat4,
@@ -18,18 +14,11 @@ struct ModelInstance<'a> {
 pub struct SceneGraphLoader;
 
 impl SceneGraphLoader {
-    pub fn load(vox_data: DotVoxData, palette: [[u8; 4]; 256]) -> WorldFile {
-        let t_total = Instant::now();
-
+    pub fn load(vox_data: DotVoxData, palette: [[u8; 4]; 256]) -> World {
         let instances = Self::collect_instances(&vox_data);
-        let all_voxels = Self::collect_all_voxels(&instances);
-        // Release the scene graph borrows before building the tree.
-        drop(instances);
-        drop(vox_data);
-        let world = Self::build_world_file(all_voxels, palette);
+        let voxels = Self::collect_all_voxels(&instances);
 
-        log::info!("Total bake time: {:.2}s", t_total.elapsed().as_secs_f32());
-        world
+        World { voxels, palette }
     }
 
     fn collect_instances(vox_data: &DotVoxData) -> Vec<ModelInstance<'_>> {
@@ -228,7 +217,7 @@ impl SceneGraphLoader {
         )
     }
 
-    fn collect_all_voxels(instances: &[ModelInstance<'_>]) -> HashMap<(i32, i32, i32), u8> {
+    fn collect_all_voxels(instances: &[ModelInstance<'_>]) -> VoxelWorldData {
         let total_voxels: usize = instances.iter().map(|i| i.voxels.len()).sum();
         log::info!(
             "Collecting {} voxels across {} instances…",
@@ -243,9 +232,9 @@ impl SceneGraphLoader {
                 for voxel in instance.voxels {
                     let local_engine = Vec3A::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
                     let world_f = transform.transform_point3a(local_engine);
-                    let world_x = world_f.x.round() as i32;
-                    let world_y = world_f.y.round() as i32;
-                    let world_z = world_f.z.round() as i32;
+                    let world_x = world_f.x.round() as i16;
+                    let world_y = world_f.y.round() as i16;
+                    let world_z = world_f.z.round() as i16;
                     acc.insert((world_x, world_y, world_z), voxel.i);
                 }
                 acc
@@ -264,91 +253,5 @@ impl SceneGraphLoader {
         );
 
         result
-    }
-
-    // ---- tight-bounding-box tree construction ----
-
-    /// Round `n` up to the next power-of-four (4, 16, 64, 256, 1024, 4096, …).
-    fn round_up_pow4(n: u32) -> u32 {
-        let mut s = n.max(4).next_power_of_two();
-        if s.ilog2() % 2 == 1 {
-            s *= 2;
-        }
-        s
-    }
-
-    fn build_world_file(
-        voxels: HashMap<(i32, i32, i32), u8>,
-        palette: [[u8; 4]; 256],
-    ) -> WorldFile {
-        let mut world_file = WorldFile::new();
-        world_file.palette = palette;
-
-        if voxels.is_empty() {
-            log::warn!("No voxels in world — output will be empty.");
-            return world_file;
-        }
-
-        // --- 1. compute tight AABB (signed world-space) ---
-        let t_aabb = Instant::now();
-        let mut bb_min = IVec3::splat(i32::MAX);
-        let mut bb_max = IVec3::splat(i32::MIN);
-        for &(x, y, z) in voxels.keys() {
-            bb_min.x = bb_min.x.min(x);
-            bb_min.y = bb_min.y.min(y);
-            bb_min.z = bb_min.z.min(z);
-            bb_max.x = bb_max.x.max(x);
-            bb_max.y = bb_max.y.max(y);
-            bb_max.z = bb_max.z.max(z);
-        }
-        let aabb_min = bb_min;
-        let aabb_size = (bb_max - bb_min + IVec3::ONE).as_uvec3();
-
-        // --- 2. round up to a power-of-four cube ---
-        let max_dim = aabb_size.x.max(aabb_size.y).max(aabb_size.z);
-        let tree_dim = Self::round_up_pow4(max_dim);
-
-        log::info!(
-            "Scene AABB: min=({},{},{}) size=({},{},{}) → tree {tree_dim}³ ({:.2}s)",
-            bb_min.x,
-            bb_min.y,
-            bb_min.z,
-            aabb_size.x,
-            aabb_size.y,
-            aabb_size.z,
-            t_aabb.elapsed().as_secs_f32(),
-        );
-
-        // --- 3. convert to local coordinates and build GPU tree directly ---
-        let t_tree = Instant::now();
-        let local_voxels = voxels.into_iter().map(|((x, y, z), value)| {
-            let local = [
-                u32::try_from(x - aabb_min.x).expect("x coordinate outside AABB"),
-                u32::try_from(y - aabb_min.y).expect("y coordinate outside AABB"),
-                u32::try_from(z - aabb_min.z).expect("z coordinate outside AABB"),
-            ];
-            (local, value)
-        });
-
-        let gpu_tree = build_gpu_tree(local_voxels, tree_dim, aabb_min.to_array())
-            .expect("failed to build occupancy-driven GPU tree");
-
-        log::info!(
-            "GPU tree built: {} nodes, {} bytes leaf data, tree_scale={} ({:.2}s)",
-            gpu_tree.nodes.len(),
-            gpu_tree.leaf_data.len(),
-            gpu_tree.tree_scale,
-            t_tree.elapsed().as_secs_f32(),
-        );
-
-        log::info!(
-            "GPU tree: root_offset=({},{},{})",
-            gpu_tree.root_offset[0],
-            gpu_tree.root_offset[1],
-            gpu_tree.root_offset[2],
-        );
-
-        world_file.tree = Some(gpu_tree);
-        world_file
     }
 }

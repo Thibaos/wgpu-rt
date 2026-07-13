@@ -9,9 +9,9 @@ use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
-use crate::player_controller::{self, PlayerController};
-use crate::tree64::World;
-use crate::tree64::renderer::{GpuTree64, GpuTree64Buffers, create_palette_buffer};
+use crate::player_controller::PlayerController;
+use crate::world::World;
+use crate::world::renderer::create_palette_buffer;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -25,14 +25,7 @@ pub struct App {
     // Compute pipeline
     compute_pipeline: wgpu::ComputePipeline,
 
-    // Single tree bind group
-    tree_bind_group: Option<wgpu::BindGroup>,
-
-    // Tree CPU data kept for collision queries
-    tree64: Option<GpuTree64>,
-
-    // Tree GPU buffers (owned here, not by a chunk manager)
-    tree_buffers: Option<GpuTree64Buffers>,
+    compute_bind_group: wgpu::BindGroup,
 
     // Camera
     camera_buffer: wgpu::Buffer,
@@ -45,7 +38,6 @@ pub struct App {
     // Timing
     last_frame_update: Instant,
     delta_time: Duration,
-    physics_accumulator: Duration,
 
     // Surface size for projection
     surface_width: u32,
@@ -53,6 +45,9 @@ pub struct App {
 
     // RT output texture (recreated on resize)
     rt_texture: wgpu::Texture,
+
+    // 3D voxel texture
+    voxel_texture: wgpu::Texture,
 
     // Layouts (reused for bind-group recreation on resize)
     tree_bind_group_layout: wgpu::BindGroupLayout,
@@ -117,30 +112,14 @@ impl App {
             ..Default::default()
         });
 
-        // Load world from a hardcoded path for now.
         let world_path = std::env::current_dir()
             .unwrap_or_default()
             .join("assets")
-            .join("nuke.world");
+            .join("models")
+            .join("nuke.vox");
 
-        let world = if world_path.exists() {
-            World::load(&world_path).expect("failed to load world file")
-        } else {
-            log::warn!(
-                "World file not found at {:?}, using empty world. \
-                 Run `cargo run --bin bake` first.",
-                world_path
-            );
-            World {
-                tree: None,
-                palette: [[0u8; 4]; 256],
-            }
-        };
-
+        let world = World::load(&world_path).expect("failed to load world file");
         let palette_buffer = create_palette_buffer(device, &world.palette);
-
-        // Take ownership of the CPU-side tree for collision queries.
-        let tree64 = world.tree;
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
@@ -169,16 +148,17 @@ impl App {
         });
 
         let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("tree64_raycast"),
+            label: Some("texture_raycast"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/tree64_compiled.wgsl"
+                "../assets/shaders/texture_raycast.wgsl"
             ))),
         });
 
-        let tree_bind_group_layout =
+        let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("tree64_bind_layout"),
                 entries: &[
+                    // render target
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -189,48 +169,31 @@ impl App {
                         },
                         count: None,
                     },
+                    // camera
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(32),
+                            min_binding_size: None,
                         },
                         count: None,
                     },
+                    // voxel texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::ReadOnly,
+                            format: wgpu::TextureFormat::R8Uint,
+                            view_dimension: wgpu::TextureViewDimension::D3,
                         },
                         count: None,
                     },
+                    // palette
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 4,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 5,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -244,47 +207,55 @@ impl App {
                 ],
             });
 
-        let (tree_buffers, tree_bind_group) = if let Some(ref tree) = tree64 {
-            let buffers = tree.create_buffers(device);
-            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tree_bind_group"),
-                layout: &tree_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&rt_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: camera_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.nodes.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.leaf_data.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: palette_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-            (Some(buffers), Some(bind_group))
-        } else {
-            (None, None)
-        };
+        let voxel_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("voxel_texture"),
+            size: wgpu::Extent3d {
+                width: 2048,
+                height: 2048,
+                depth_or_array_layers: 512,
+            },
+            mip_level_count: 3,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R8Uint,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+
+        let voxel_texture_view = voxel_texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("voxel_texture_view"),
+            format: Some(TextureFormat::R8Uint),
+            dimension: Some(wgpu::TextureViewDimension::D3),
+            ..Default::default()
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tree_bind_group"),
+            layout: &compute_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&rt_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: palette_buffer.as_entire_binding(),
+                },
+            ],
+        });
 
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("tree64_pipeline_layout"),
-                bind_group_layouts: &[Some(&tree_bind_group_layout)],
+                bind_group_layouts: &[Some(&compute_bind_group_layout)],
                 immediate_size: 0,
             });
 
@@ -341,20 +312,18 @@ impl App {
 
         App {
             compute_pipeline,
-            tree_bind_group,
-            tree64,
-            tree_buffers,
             camera_buffer,
+            compute_bind_group,
             player_controller,
             blit_pipeline,
             blit_view_bind_group,
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
-            physics_accumulator: Duration::default(),
             surface_width: width,
             surface_height: height,
             rt_texture,
-            tree_bind_group_layout,
+            voxel_texture,
+            tree_bind_group_layout: compute_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
             palette_buffer,
         }
@@ -398,39 +367,37 @@ impl App {
             ..Default::default()
         });
 
-        // Rebuild the single tree bind group with the new render target
-        if let Some(ref buffers) = self.tree_buffers {
-            self.tree_bind_group = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("tree_bind_group"),
-                layout: &self.tree_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&rt_view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: buffers.params.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.camera_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: buffers.nodes.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 4,
-                        resource: buffers.leaf_data.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 5,
-                        resource: self.palette_buffer.as_entire_binding(),
-                    },
-                ],
-            }));
-        }
+        let voxel_texture_view = self
+            .voxel_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                label: Some("voxel_texture_view"),
+                format: Some(TextureFormat::R8Uint),
+                dimension: Some(wgpu::TextureViewDimension::D3),
+                ..Default::default()
+            });
+
+        self.compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("tree_bind_group"),
+            layout: &self.tree_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&rt_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: self.palette_buffer.as_entire_binding(),
+                },
+            ],
+        });
 
         self.blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit_view"),
@@ -462,14 +429,6 @@ impl App {
     ) {
         self.update_delta_time();
 
-        // Accumulate time and run fixed-step physics ticks.
-        self.physics_accumulator += self.delta_time;
-        while self.physics_accumulator >= player_controller::TICK_DURATION {
-            self.player_controller
-                .physics_tick(self.tree64.as_ref(), keys);
-            self.physics_accumulator -= player_controller::TICK_DURATION;
-        }
-
         self.player_controller.fly_movement(self.delta_time, keys);
 
         let aspect = self.surface_width as f32 / self.surface_height as f32;
@@ -496,15 +455,13 @@ impl App {
             let workgroup_x = self.surface_width.div_ceil(8);
             let workgroup_y = self.surface_height.div_ceil(8);
 
-            if let Some(ref bind_group) = self.tree_bind_group {
-                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("tree64_compute_pass"),
-                    timestamp_writes: None,
-                });
-                cpass.set_pipeline(&self.compute_pipeline);
-                cpass.set_bind_group(0, bind_group, &[]);
-                cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
-            }
+            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("tree64_compute_pass"),
+                timestamp_writes: None,
+            });
+            cpass.set_pipeline(&self.compute_pipeline);
+            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
+            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
         }
 
         {
