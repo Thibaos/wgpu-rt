@@ -250,7 +250,12 @@ impl ApplicationHandler for Framework {
             window.clone(),
         ));
 
-        let app = App::init(surface.config(), &context.adapter, &context.device);
+        let app = App::init(
+            surface.config(),
+            &context.adapter,
+            &context.device,
+            &context.queue,
+        );
 
         self.window = Some(window);
         self.surface = surface;

@@ -13,6 +13,12 @@ use crate::player_controller::PlayerController;
 use crate::world::World;
 use crate::world::renderer::create_palette_buffer;
 
+pub const VOXEL_TEXTURE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
+    width: 2048,
+    height: 2048,
+    depth_or_array_layers: 512,
+};
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CameraUniforms {
@@ -47,10 +53,10 @@ pub struct App {
     rt_texture: wgpu::Texture,
 
     // 3D voxel texture
-    voxel_texture: wgpu::Texture,
+    voxel_texture_sampler: wgpu::Sampler,
 
     // Layouts (reused for bind-group recreation on resize)
-    tree_bind_group_layout: wgpu::BindGroupLayout,
+    compute_bind_group_layout: wgpu::BindGroupLayout,
     blit_bind_group_layout: wgpu::BindGroupLayout,
 
     // Palette buffer (world-level color lookup)
@@ -83,6 +89,7 @@ impl App {
         config: &wgpu::SurfaceConfiguration,
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> Self {
         let width = config.width;
         let height = config.height;
@@ -156,7 +163,7 @@ impl App {
 
         let compute_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("tree64_bind_layout"),
+                label: Some("compute_bind_layout"),
                 entries: &[
                     // render target
                     wgpu::BindGroupLayoutEntry {
@@ -184,11 +191,7 @@ impl App {
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::ReadOnly,
-                            format: wgpu::TextureFormat::R8Uint,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                        },
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                     // palette
@@ -209,28 +212,40 @@ impl App {
 
         let voxel_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel_texture"),
-            size: wgpu::Extent3d {
-                width: 2048,
-                height: 2048,
-                depth_or_array_layers: 512,
-            },
+            size: VOXEL_TEXTURE_SIZE,
             mip_level_count: 3,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
             format: wgpu::TextureFormat::R8Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
 
-        let voxel_texture_view = voxel_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("voxel_texture_view"),
-            format: Some(TextureFormat::R8Uint),
-            dimension: Some(wgpu::TextureViewDimension::D3),
+        let texture_data = world.to_bytes();
+
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &voxel_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &texture_data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(VOXEL_TEXTURE_SIZE.width),
+                rows_per_image: Some(VOXEL_TEXTURE_SIZE.height),
+            },
+            VOXEL_TEXTURE_SIZE,
+        );
+
+        let voxel_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("voxel_texture_sampler"),
             ..Default::default()
         });
 
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tree_bind_group"),
+            label: Some("compute_bind_group"),
             layout: &compute_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
@@ -243,7 +258,7 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
+                    resource: wgpu::BindingResource::Sampler(&voxel_texture_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -254,13 +269,13 @@ impl App {
 
         let compute_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("tree64_pipeline_layout"),
+                label: Some("compute_pipeline_layout"),
                 bind_group_layouts: &[Some(&compute_bind_group_layout)],
                 immediate_size: 0,
             });
 
         let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("tree64_compute_pipeline"),
+            label: Some("compute_pipeline"),
             layout: Some(&compute_pipeline_layout),
             module: &compute_shader,
             entry_point: Some("main"),
@@ -322,8 +337,8 @@ impl App {
             surface_width: width,
             surface_height: height,
             rt_texture,
-            voxel_texture,
-            tree_bind_group_layout: compute_bind_group_layout,
+            voxel_texture_sampler,
+            compute_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
             palette_buffer,
         }
@@ -367,18 +382,9 @@ impl App {
             ..Default::default()
         });
 
-        let voxel_texture_view = self
-            .voxel_texture
-            .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("voxel_texture_view"),
-                format: Some(TextureFormat::R8Uint),
-                dimension: Some(wgpu::TextureViewDimension::D3),
-                ..Default::default()
-            });
-
         self.compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("tree_bind_group"),
-            layout: &self.tree_bind_group_layout,
+            label: Some("compute_bind_group"),
+            layout: &self.compute_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -390,7 +396,7 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
+                    resource: wgpu::BindingResource::Sampler(&self.voxel_texture_sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
@@ -456,7 +462,7 @@ impl App {
             let workgroup_y = self.surface_height.div_ceil(8);
 
             let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("tree64_compute_pass"),
+                label: Some("compute_pass"),
                 timestamp_writes: None,
             });
             cpass.set_pipeline(&self.compute_pipeline);
