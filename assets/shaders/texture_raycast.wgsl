@@ -17,6 +17,7 @@ struct Camera {
     pos: vec4<f32>,
     view_inv: mat4x4<f32>,
     proj_inv: mat4x4<f32>,
+    heatmap: u32,
 }
 
 @binding(0) @group(0) var output : texture_storage_2d<rgba8unorm, write>;
@@ -80,7 +81,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     var hit           = false;
     var hit_voxel_id  = 0u;
     var hit_normal    = vec3<f32>(0.0);
+    var steps_taken   = 0u;
     var t_entry       = t_near;   // entry t of current region
+    var entry_bias    = 1e-4;
     var steps_remaining = MAX_STEPS;
 
     // Bound stack: parent_exit[L] is the exit t of the level-(L+1) voxel
@@ -104,7 +107,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // ---- Initialise DDA at this mip level from t_entry ------------
         // Bias forward to avoid landing exactly on a voxel boundary.
-        let pos = ray_origin + ray_dir * (t_entry + 1e-4);
+        let pos = ray_origin + ray_dir * (t_entry + entry_bias);
         var X = i32(clamp(floor(pos.x / voxel_size), 0.0, f32(grid_size - 1)));
         var Y = i32(clamp(floor(pos.y / voxel_size), 0.0, f32(grid_size - 1)));
         var Z = i32(clamp(floor(pos.z / voxel_size), 0.0, f32(grid_size - 1)));
@@ -140,6 +143,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         // ---- Check the starting voxel at this level -------------------
         let start_voxel = textureLoad(voxel_data, vec3<i32>(X, Y, Z), mip).r;
+        steps_taken++;
         if start_voxel != 0u {
             if level == 0 {
                 hit = true;
@@ -211,6 +215,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             }
 
             let voxel = textureLoad(voxel_data, vec3<i32>(X, Y, Z), mip).r;
+            steps_taken++;
             if voxel != 0u {
                 if level == 0 {
                     hit = true;
@@ -226,6 +231,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
                 }
                 // Coarse hit: record bounds and descend.
                 t_entry = t_cross;
+                // The DDA state has already advanced into this coarse voxel;
+                // its next boundary is the voxel's exit.
                 parent_exit[level - 1] = min(tMaxX, min(tMaxY, tMaxZ));
                 found_coarse = true;
                 level = level - 1;
@@ -243,6 +250,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // exit boundary (within the grandparent's bounds).
         if level < MAX_MIP_LEVEL {
             t_entry = t_bound;
+            // Move beyond the boundary when reconstructing the parent DDA,
+            // avoiding re-entry into the cell just left for negative rays.
+            entry_bias = 1e-2;
             level = level + 1;
             continue;
         }
@@ -253,13 +263,23 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // ---- Shading ------------------------------------------------------
     if hit {
-        let base_rgb = palette[hit_voxel_id].rgb;
+        if camera.heatmap != 0u {
+            // Blue → cyan → yellow → red, with more expensive rays hotter.
+            let amount = clamp(f32(steps_taken) / f32(MAX_STEPS), 0.0, 1.0);
+            let heat = clamp(amount * 4.0, 0.0, 4.0);
+            let red = clamp(heat - 2.0, 0.0, 1.0);
+            let green = 1.0 - abs(heat - 2.0) * 0.5;
+            let blue = clamp(1.0 - heat, 0.0, 1.0);
+            color = vec4<f32>(vec3<f32>(red, green, blue), 1.0);
+        } else {
+            let base_rgb = palette[hit_voxel_id].rgb;
 
-        let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
-        let ambient = 0.15;
-        let diffuse = max(dot(hit_normal, light_dir), 0.0);
+            let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.3));
+            let ambient = 0.15;
+            let diffuse = max(dot(hit_normal, light_dir), 0.0);
 
-        color = vec4<f32>(base_rgb * (ambient + diffuse * 0.85), 1.0);
+            color = vec4<f32>(base_rgb * (ambient + diffuse * 0.85), 1.0);
+        }
     }
 
     textureStore(output, pixel, color);

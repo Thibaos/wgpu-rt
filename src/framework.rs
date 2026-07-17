@@ -289,6 +289,7 @@ impl ApplicationHandler for Framework {
                 event:
                     KeyEvent {
                         logical_key,
+                        physical_key,
                         state: ElementState::Pressed,
                         ..
                     },
@@ -311,6 +312,11 @@ impl ApplicationHandler for Framework {
                     }
                 }
 
+                if physical_key
+                    == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyH)
+                {
+                    app.toggle_heatmap();
+                }
                 self.pressed_keys.insert(logical_key);
             }
             WindowEvent::KeyboardInput {

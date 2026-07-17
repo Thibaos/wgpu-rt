@@ -24,6 +24,7 @@ struct CameraUniforms {
     pos: [f32; 4],
     view_inv: [[f32; 4]; 4],
     proj_inv: [[f32; 4]; 4],
+    heatmap: [u32; 4],
 }
 
 pub struct App {
@@ -63,6 +64,9 @@ pub struct App {
 
     // Offset added to camera pos to convert world space → texture space.
     world_offset: [f32; 3],
+
+    // Display traversal cost instead of voxel colors.
+    heatmap: bool,
 }
 
 impl App {
@@ -154,6 +158,7 @@ impl App {
             )
             .inverse()
             .to_cols_array_2d(),
+            heatmap: [0; 4],
         };
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -359,6 +364,7 @@ impl App {
             blit_bind_group_layout: blit_view_bind_group_layout,
             palette_buffer,
             world_offset,
+            heatmap: false,
         }
     }
 
@@ -473,6 +479,7 @@ impl App {
             )
             .inverse()
             .to_cols_array_2d(),
+            heatmap: [self.heatmap as u32, 0, 0, 0],
         };
 
         queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniforms));
@@ -517,6 +524,14 @@ impl App {
         }
 
         queue.submit(Some(encoder.finish()));
+    }
+
+    pub fn toggle_heatmap(&mut self) {
+        self.heatmap = !self.heatmap;
+        log::info!(
+            "Traversal heatmap {}",
+            if self.heatmap { "enabled" } else { "disabled" }
+        );
     }
 
     pub fn update_look_position(&mut self, delta: (f64, f64)) {
