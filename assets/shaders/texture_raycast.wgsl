@@ -13,21 +13,16 @@
 // positive), the traversal ascends to the parent level and resumes the
 // coarser DDA from the region's exit — guaranteeing forward progress.
 
-@binding(0) @group(0) var output : texture_storage_2d<rgba8unorm, write>;
-
 struct Camera {
     pos: vec4<f32>,
     view_inv: mat4x4<f32>,
     proj_inv: mat4x4<f32>,
 }
 
+@binding(0) @group(0) var output : texture_storage_2d<rgba8unorm, write>;
 @binding(1) @group(0) var<uniform> camera : Camera;
-
 @binding(2) @group(0) var voxel_data : texture_3d<u32>;
-
-@binding(3) @group(0) var voxel_sampler : sampler;
-
-@binding(4) @group(0) var<storage, read> palette : array<vec4<f32>>;
+@binding(3) @group(0) var<storage, read> palette : array<vec4<f32>>;
 
 const VOLUME_SIZE: u32 = 2048u;
 const VOLUME_SIZE_F: f32 = 2048.0;

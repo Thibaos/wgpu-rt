@@ -10,8 +10,7 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::world::World;
-use crate::world::renderer::create_palette_buffer;
+use crate::world::{World, create_palette_buffer};
 
 pub const VOXEL_TEXTURE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
     width: 2048,
@@ -54,7 +53,6 @@ pub struct App {
 
     // 3D voxel texture
     voxel_texture_view: wgpu::TextureView,
-    voxel_texture_sampler: wgpu::Sampler,
 
     // Layouts (reused for bind-group recreation on resize)
     compute_bind_group_layout: wgpu::BindGroupLayout,
@@ -197,6 +195,7 @@ impl App {
                         },
                         count: None,
                     },
+                    // voxel texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
                         visibility: wgpu::ShaderStages::COMPUTE,
@@ -207,16 +206,9 @@ impl App {
                         },
                         count: None,
                     },
-                    // voxel texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                        count: None,
-                    },
                     // palette
                     wgpu::BindGroupLayoutEntry {
-                        binding: 4,
+                        binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -269,11 +261,6 @@ impl App {
             );
         }
 
-        let voxel_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("voxel_texture_sampler"),
-            ..Default::default()
-        });
-
         let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("compute_bind_group"),
             layout: &compute_bind_group_layout,
@@ -292,10 +279,6 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&voxel_texture_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
                     resource: palette_buffer.as_entire_binding(),
                 },
             ],
@@ -372,7 +355,6 @@ impl App {
             surface_height: height,
             rt_texture,
             voxel_texture_view,
-            voxel_texture_sampler,
             compute_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
             palette_buffer,
@@ -436,10 +418,6 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.voxel_texture_sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
                     resource: self.palette_buffer.as_entire_binding(),
                 },
             ],

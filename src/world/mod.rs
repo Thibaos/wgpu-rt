@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 pub mod loader;
-pub mod renderer;
+
+use wgpu::util::DeviceExt;
 
 use crate::app::VOXEL_TEXTURE_SIZE;
 use crate::world::loader::SceneGraphLoader;
@@ -12,9 +13,6 @@ pub type VoxelWorldData = HashMap<(i16, i16, i16), u8>;
 pub struct World {
     pub voxels: VoxelWorldData,
     pub palette: [[u8; 4]; 256],
-    /// Offset added to world-space voxel positions to get 3D texture
-    /// coordinates.  Used to center the scene in the texture so that
-    /// world origin maps to the texture center (allowing negative coords).
     pub world_offset: [i32; 3],
 }
 
@@ -65,7 +63,7 @@ impl World {
         let total = (size as usize) * (size as usize) * (size as usize);
         let mut bytes = vec![0u8; total];
 
-        for (&(x, y, z), &v) in voxels {
+        for (&(x, z, y), &v) in voxels {
             let xi = x as i32 + offset[0];
             let yi = y as i32 + offset[1];
             let zi = z as i32 + offset[2];
@@ -114,4 +112,22 @@ impl World {
         }
         dst
     }
+}
+
+pub fn create_palette_buffer(device: &wgpu::Device, palette: &[[u8; 4]; 256]) -> wgpu::Buffer {
+    let float_palette: [[f32; 4]; 256] = std::array::from_fn(|i| {
+        let [r, g, b, a] = palette[i];
+        [
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+            a as f32 / 255.0,
+        ]
+    });
+
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("palette"),
+        contents: bytemuck::cast_slice(&float_palette),
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+    })
 }

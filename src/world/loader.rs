@@ -4,7 +4,10 @@ use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
-use crate::world::{VoxelWorldData, World};
+use crate::{
+    app::VOXEL_TEXTURE_SIZE,
+    world::{VoxelWorldData, World},
+};
 
 struct ModelInstance<'a> {
     transform: Mat4,
@@ -31,9 +34,17 @@ impl SceneGraphLoader {
     /// Compute a world-to-texture offset that centers the scene bounding box
     /// in the 3D texture so that world origin maps to texture center.
     fn center_world(voxels: VoxelWorldData) -> ([i32; 3], VoxelWorldData) {
+        let texture_center = (
+            (VOXEL_TEXTURE_SIZE.width / 2) as i32,
+            (VOXEL_TEXTURE_SIZE.height / 2) as i32,
+            (VOXEL_TEXTURE_SIZE.depth_or_array_layers / 2) as i32,
+        );
+
         if voxels.is_empty() {
-            // Texture is 2048x2048x512 — center at origin with no scene.
-            return ([1024, 1024, 256], voxels);
+            return (
+                [texture_center.0, texture_center.1, texture_center.2],
+                voxels,
+            );
         }
 
         let mut min = (i16::MAX, i16::MAX, i16::MAX);
