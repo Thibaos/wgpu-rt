@@ -129,7 +129,7 @@ impl App {
             .unwrap_or_default()
             .join("assets")
             .join("models")
-            .join("nuke.vox");
+            .join("bistro.vox");
 
         let world = World::load(&world_path).expect("failed to load world file");
         let palette_buffer = create_palette_buffer(device, &world.palette);

@@ -1,18 +1,3 @@
-// Amanatides-Woo fast voxel traversal with coarse-to-fine mipmap LOD.
-// "A Fast Voxel Traversal Algorithm for Ray Tracing" (1987).
-//
-// Starts at the coarsest mip level (4: 32³, voxel = 16 units) to skip
-// empty space cheaply.  When a filled coarse voxel is found, the
-// traversal descends into finer levels (3 → 2 → 1 → 0) constrained to
-// the bounds of the parent voxel.  A single unified step budget
-// (MAX_STEPS) is shared across all levels.
-//
-// Max-pool mipmaps are conservative: a non-zero coarse voxel contains
-// at least one non-zero child, but the ray may not pass through it.
-// When a descent finds no hit within the parent's bounds (a false
-// positive), the traversal ascends to the parent level and resumes the
-// coarser DDA from the region's exit — guaranteeing forward progress.
-
 struct Camera {
     pos: vec4<f32>,
     view_inv: mat4x4<f32>,
@@ -42,7 +27,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // ---- Ray generation ------------------------------------------------
     let uv = (vec2<f32>(pixel) + 0.5) / dims;
     let ndc = uv * 2.0 - 1.0;
 
@@ -53,7 +37,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let view_dir = view_pos.xyz / view_pos.w;
     let ray_dir = normalize((camera.view_inv * vec4<f32>(view_dir, 0.0)).xyz);
 
-    // ---- Ray-AABB intersection with [0, VOLUME_SIZE)^3 -----------------
     let inv_dir = 1.0 / ray_dir;
 
     let t0 = (vec3<f32>(0.0) - ray_origin) * inv_dir;
@@ -72,12 +55,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    // ---- Step directions (constant for a ray, computed once) -----------
     let stepX = select(-1, 1, ray_dir.x > 0.0);
     let stepY = select(-1, 1, ray_dir.y > 0.0);
     let stepZ = select(-1, 1, ray_dir.z > 0.0);
 
-    // ---- Coarse-to-fine traversal -------------------------------------
     var hit           = false;
     var hit_voxel_id  = 0u;
     var hit_normal    = vec3<f32>(0.0);
@@ -105,7 +86,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let mip        = level;
         let t_bound    = parent_exit[level];
 
-        // ---- Initialise DDA at this mip level from t_entry ------------
         // Bias forward to avoid landing exactly on a voxel boundary.
         let pos = ray_origin + ray_dir * (t_entry + entry_bias);
         var X = i32(clamp(floor(pos.x / voxel_size), 0.0, f32(grid_size - 1)));
@@ -141,7 +121,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let tDeltaY = voxel_size / abs(ray_dir.y);
         let tDeltaZ = voxel_size / abs(ray_dir.z);
 
-        // ---- Check the starting voxel at this level -------------------
         let start_voxel = textureLoad(voxel_data, vec3<i32>(X, Y, Z), mip).r;
         steps_taken++;
         if start_voxel != 0u {
@@ -167,7 +146,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
             continue;
         }
 
-        // ---- Amanatides-Woo DDA at this mip level ---------------------
         var stepAxis:    i32 = -1;
         var lastStepDir: i32 =  0;
         var found_coarse = false;
@@ -261,7 +239,6 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         break;
     }
 
-    // ---- Shading ------------------------------------------------------
     if hit {
         if camera.heatmap != 0u {
             // Blue → cyan → yellow → red, with more expensive rays hotter.
