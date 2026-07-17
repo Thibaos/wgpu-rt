@@ -18,7 +18,61 @@ impl SceneGraphLoader {
         let instances = Self::collect_instances(&vox_data);
         let voxels = Self::collect_all_voxels(&instances);
 
-        World { voxels, palette }
+        // Compute scene bounding box to center the world around (0, 0, 0).
+        let (world_offset, voxels) = Self::center_world(voxels);
+
+        World {
+            voxels,
+            palette,
+            world_offset,
+        }
+    }
+
+    /// Compute a world-to-texture offset that centers the scene bounding box
+    /// in the 3D texture so that world origin maps to texture center.
+    fn center_world(voxels: VoxelWorldData) -> ([i32; 3], VoxelWorldData) {
+        if voxels.is_empty() {
+            // Texture is 2048x2048x512 — center at origin with no scene.
+            return ([1024, 1024, 256], voxels);
+        }
+
+        let mut min = (i16::MAX, i16::MAX, i16::MAX);
+        let mut max = (i16::MIN, i16::MIN, i16::MIN);
+        for &(x, y, z) in voxels.keys() {
+            min.0 = min.0.min(x);
+            min.1 = min.1.min(y);
+            min.2 = min.2.min(z);
+            max.0 = max.0.max(x);
+            max.1 = max.1.max(y);
+            max.2 = max.2.max(z);
+        }
+
+        // Center of the scene in world space.
+        let cx = (min.0 as f32 + max.0 as f32) * 0.5;
+        let cy = (min.1 as f32 + max.1 as f32) * 0.5;
+        let cz = (min.2 as f32 + max.2 as f32) * 0.5;
+
+        // We want world origin (0,0,0) to map to the texture center.
+        // Texture center: (1024, 1024, 256) for a 2048x2048x512 texture.
+        // offset = texture_center - scene_center
+        let ox = (1024.0 - cx).round() as i32;
+        let oy = (1024.0 - cy).round() as i32;
+        let oz = (256.0 - cz).round() as i32;
+
+        log::info!(
+            "Scene bounds: ({}, {}, {}) → ({}, {}, {}), offset: ({}, {}, {})",
+            min.0,
+            min.1,
+            min.2,
+            max.0,
+            max.1,
+            max.2,
+            ox,
+            oy,
+            oz,
+        );
+
+        ([ox, oy, oz], voxels)
     }
 
     fn collect_instances(vox_data: &DotVoxData) -> Vec<ModelInstance<'_>> {

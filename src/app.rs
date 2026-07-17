@@ -53,6 +53,7 @@ pub struct App {
     rt_texture: wgpu::Texture,
 
     // 3D voxel texture
+    voxel_texture_view: wgpu::TextureView,
     voxel_texture_sampler: wgpu::Sampler,
 
     // Layouts (reused for bind-group recreation on resize)
@@ -61,6 +62,9 @@ pub struct App {
 
     // Palette buffer (world-level color lookup)
     palette_buffer: wgpu::Buffer,
+
+    // Offset added to camera pos to convert world space → texture space.
+    world_offset: [f32; 3],
 }
 
 impl App {
@@ -128,13 +132,19 @@ impl App {
         let world = World::load(&world_path).expect("failed to load world file");
         let palette_buffer = create_palette_buffer(device, &world.palette);
 
+        let world_offset = [
+            world.world_offset[0] as f32,
+            world.world_offset[1] as f32,
+            world.world_offset[2] as f32,
+        ];
+
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
         let camera_uniforms = CameraUniforms {
             pos: [
-                player_controller.translation.x,
-                player_controller.translation.y,
-                player_controller.translation.z,
+                player_controller.translation.x + world_offset[0],
+                player_controller.translation.y + world_offset[1],
+                player_controller.translation.z + world_offset[2],
                 1.0,
             ],
             view_inv: player_controller.view().inverse().to_cols_array_2d(),
@@ -187,16 +197,26 @@ impl App {
                         },
                         count: None,
                     },
-                    // voxel texture
                     wgpu::BindGroupLayoutEntry {
                         binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            sample_type: wgpu::TextureSampleType::Uint,
+                        },
+                        count: None,
+                    },
+                    // voxel texture
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
                         count: None,
                     },
                     // palette
                     wgpu::BindGroupLayoutEntry {
-                        binding: 3,
+                        binding: 4,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -213,7 +233,7 @@ impl App {
         let voxel_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("voxel_texture"),
             size: VOXEL_TEXTURE_SIZE,
-            mip_level_count: 3,
+            mip_level_count: 5,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
             format: wgpu::TextureFormat::R8Uint,
@@ -221,23 +241,33 @@ impl App {
             view_formats: &[],
         });
 
-        let texture_data = world.to_bytes();
+        let voxel_texture_view = voxel_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &voxel_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &texture_data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(VOXEL_TEXTURE_SIZE.width),
-                rows_per_image: Some(VOXEL_TEXTURE_SIZE.height),
-            },
-            VOXEL_TEXTURE_SIZE,
-        );
+        let mip_data = world.to_mip_bytes();
+
+        for (level, data) in mip_data.iter().enumerate() {
+            let level_size = VOXEL_TEXTURE_SIZE.width >> level;
+            let level_depth = VOXEL_TEXTURE_SIZE.depth_or_array_layers >> level;
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &voxel_texture,
+                    mip_level: level as u32,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(level_size),
+                    rows_per_image: Some(level_size),
+                },
+                wgpu::Extent3d {
+                    width: level_size,
+                    height: level_size,
+                    depth_or_array_layers: level_depth,
+                },
+            );
+        }
 
         let voxel_texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("voxel_texture_sampler"),
@@ -258,10 +288,14 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&voxel_texture_sampler),
+                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&voxel_texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
                     resource: palette_buffer.as_entire_binding(),
                 },
             ],
@@ -337,10 +371,12 @@ impl App {
             surface_width: width,
             surface_height: height,
             rt_texture,
+            voxel_texture_view,
             voxel_texture_sampler,
             compute_bind_group_layout,
             blit_bind_group_layout: blit_view_bind_group_layout,
             palette_buffer,
+            world_offset,
         }
     }
 
@@ -396,10 +432,14 @@ impl App {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.voxel_texture_sampler),
+                    resource: wgpu::BindingResource::TextureView(&self.voxel_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,
+                    resource: wgpu::BindingResource::Sampler(&self.voxel_texture_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
                     resource: self.palette_buffer.as_entire_binding(),
                 },
             ],
@@ -440,7 +480,12 @@ impl App {
         let aspect = self.surface_width as f32 / self.surface_height as f32;
         let camera_pos = self.player_controller.camera_position();
         let camera_uniforms = CameraUniforms {
-            pos: [camera_pos.x, camera_pos.y, camera_pos.z, 1.0],
+            pos: [
+                camera_pos.x + self.world_offset[0],
+                camera_pos.y + self.world_offset[1],
+                camera_pos.z + self.world_offset[2],
+                1.0,
+            ],
             view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
             proj_inv: glam::camera::rh::proj::vulkan::perspective(
                 70f32.to_radians(),
