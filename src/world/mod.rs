@@ -1,12 +1,15 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+pub mod chunk;
 pub mod loader;
 
 use wgpu::util::DeviceExt;
 
-use crate::app::VOXEL_TEXTURE_SIZE;
+use crate::world::chunk::CHUNK_TEXTURE_SIZE;
 use crate::world::loader::SceneGraphLoader;
+
+pub const MIP_LEVELS: usize = 5;
 
 pub type VoxelWorldData = HashMap<(i16, i16, i16), u8>;
 
@@ -43,11 +46,11 @@ impl World {
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
-        Self::flatten_voxels(&self.voxels, VOXEL_TEXTURE_SIZE.width, self.world_offset)
+        Self::flatten_voxels(&self.voxels, CHUNK_TEXTURE_SIZE.width, self.world_offset)
     }
 
-    pub fn to_mip_bytes(&self) -> [Vec<u8>; 5] {
-        let size0 = VOXEL_TEXTURE_SIZE.width;
+    pub fn to_mip_bytes(&self) -> [Vec<u8>; MIP_LEVELS] {
+        let size0 = CHUNK_TEXTURE_SIZE.width;
         let mip0 = Self::flatten_voxels(&self.voxels, size0, self.world_offset);
         let mip1 = Self::downsample_max(&mip0, size0);
         let mip2 = Self::downsample_max(&mip1, size0 / 2);
@@ -56,14 +59,11 @@ impl World {
         [mip0, mip1, mip2, mip3, mip4]
     }
 
-    /// Flatten sparse voxel data into a dense 3D byte array.
-    /// Applies `offset` so that world-space positions (which may be
-    /// negative) map to valid texture indices in `[0, size)`.
     fn flatten_voxels(voxels: &VoxelWorldData, size: u32, offset: [i32; 3]) -> Vec<u8> {
         let total = (size as usize) * (size as usize) * (size as usize);
         let mut bytes = vec![0u8; total];
 
-        for (&(x, z, y), &v) in voxels {
+        for (&(x, y, z), &v) in voxels {
             let xi = x as i32 + offset[0];
             let yi = y as i32 + offset[1];
             let zi = z as i32 + offset[2];

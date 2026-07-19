@@ -4,10 +4,7 @@ use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
-use crate::{
-    app::VOXEL_TEXTURE_SIZE,
-    world::{VoxelWorldData, World},
-};
+use crate::world::{VoxelWorldData, World, chunk::CHUNK_TEXTURE_SIZE};
 
 struct ModelInstance<'a> {
     transform: Mat4,
@@ -34,17 +31,14 @@ impl SceneGraphLoader {
     /// Compute a world-to-texture offset that centers the scene bounding box
     /// in the 3D texture so that world origin maps to texture center.
     fn center_world(voxels: VoxelWorldData) -> ([i32; 3], VoxelWorldData) {
-        let texture_center = (
-            (VOXEL_TEXTURE_SIZE.width / 2) as i32,
-            (VOXEL_TEXTURE_SIZE.height / 2) as i32,
-            (VOXEL_TEXTURE_SIZE.depth_or_array_layers / 2) as i32,
+        let (w_x, w_y, w_z) = (
+            (CHUNK_TEXTURE_SIZE.width / 2) as i32,
+            (CHUNK_TEXTURE_SIZE.height / 2) as i32,
+            (CHUNK_TEXTURE_SIZE.depth_or_array_layers / 2) as i32,
         );
 
         if voxels.is_empty() {
-            return (
-                [texture_center.0, texture_center.1, texture_center.2],
-                voxels,
-            );
+            return ([w_x, w_y, w_z], voxels);
         }
 
         let mut min = (i16::MAX, i16::MAX, i16::MAX);
@@ -63,12 +57,9 @@ impl SceneGraphLoader {
         let cy = (min.1 as f32 + max.1 as f32) * 0.5;
         let cz = (min.2 as f32 + max.2 as f32) * 0.5;
 
-        // We want world origin (0,0,0) to map to the texture center.
-        // Texture center: (1024, 1024, 256) for a 2048x2048x512 texture.
-        // offset = texture_center - scene_center
-        let ox = (1024.0 - cx).round() as i32;
-        let oy = (1024.0 - cy).round() as i32;
-        let oz = (256.0 - cz).round() as i32;
+        let ox = (w_x as f32 - cx).round() as i32;
+        let oy = (w_y as f32 - cy).round() as i32;
+        let oz = (w_z as f32 - cz).round() as i32;
 
         log::info!(
             "Scene bounds: ({}, {}, {}) → ({}, {}, {}), offset: ({}, {}, {})",

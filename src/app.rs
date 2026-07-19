@@ -5,18 +5,12 @@ use std::time::{Duration, Instant};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use wgpu::{Extent3d, StoreOp, TextureDescriptor, TextureFormat, TextureUsages};
+use wgpu::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::world::{World, create_palette_buffer};
-
-pub const VOXEL_TEXTURE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
-    width: 2048,
-    height: 2048,
-    depth_or_array_layers: 512,
-};
+use crate::utils::{INDEX_COUNT, Vertex, create_vertices};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -28,18 +22,7 @@ struct CameraUniforms {
 }
 
 pub struct App {
-    // Compute pipeline
-    compute_pipeline: wgpu::ComputePipeline,
-
-    compute_bind_group: wgpu::BindGroup,
-
-    // Camera
-    camera_buffer: wgpu::Buffer,
     pub player_controller: PlayerController,
-
-    // Blit pass
-    blit_pipeline: wgpu::RenderPipeline,
-    blit_view_bind_group: wgpu::BindGroup,
 
     // Timing
     last_frame_update: Instant,
@@ -52,18 +35,12 @@ pub struct App {
     // RT output texture (recreated on resize)
     rt_texture: wgpu::Texture,
 
-    // 3D voxel texture
-    voxel_texture_view: wgpu::TextureView,
-
-    // Layouts (reused for bind-group recreation on resize)
-    compute_bind_group_layout: wgpu::BindGroupLayout,
-    blit_bind_group_layout: wgpu::BindGroupLayout,
-
-    // Palette buffer (world-level color lookup)
-    palette_buffer: wgpu::Buffer,
-
-    // Offset added to camera pos to convert world space → texture space.
-    world_offset: [f32; 3],
+    // Rasterize AABBs pipeline
+    rasterize_aabbs_pipeline: wgpu::RenderPipeline,
+    rasterize_aabbs_bind_group: wgpu::BindGroup,
+    vertex_buf: wgpu::Buffer,
+    index_buf: wgpu::Buffer,
+    uniform_buf: wgpu::Buffer,
 
     // Display traversal cost instead of voxel colors.
     heatmap: bool,
@@ -95,7 +72,6 @@ impl App {
         config: &wgpu::SurfaceConfiguration,
         _adapter: &wgpu::Adapter,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
     ) -> Self {
         let width = config.width;
         let height = config.height;
@@ -118,252 +94,137 @@ impl App {
             view_formats: &[format],
         });
 
-        let rt_view = rt_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("rt_view"),
-            format: Some(format),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            ..Default::default()
-        });
-
-        let world_path = std::env::current_dir()
-            .unwrap_or_default()
-            .join("assets")
-            .join("models")
-            .join("bistro.vox");
-
-        let world = World::load(&world_path).expect("failed to load world file");
-        let palette_buffer = create_palette_buffer(device, &world.palette);
-
-        let world_offset = [
-            world.world_offset[0] as f32,
-            world.world_offset[1] as f32,
-            world.world_offset[2] as f32,
-        ];
-
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
-        let camera_uniforms = CameraUniforms {
-            pos: [
-                player_controller.translation.x + world_offset[0],
-                player_controller.translation.y + world_offset[1],
-                player_controller.translation.z + world_offset[2],
-                1.0,
-            ],
-            view_inv: player_controller.view().inverse().to_cols_array_2d(),
-            proj_inv: glam::camera::rh::proj::vulkan::perspective(
-                std::f32::consts::FRAC_PI_4,
-                aspect,
-                0.1,
-                10000.0,
-            )
-            .inverse()
-            .to_cols_array_2d(),
-            heatmap: [0; 4],
-        };
 
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera_uniforms"),
-            contents: bytemuck::bytes_of(&camera_uniforms),
+        let vertex_size = std::mem::size_of::<Vertex>();
+        let (vertex_data, index_data) = create_vertices();
+
+        let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(&vertex_data),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let index_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(&index_data),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let rasterize_aabbs_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(64),
+                    },
+                    count: None,
+                }],
+            });
+
+        let proj = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_4,
+            aspect,
+            0.1,
+            10000.0,
+        );
+        let view = player_controller.view();
+
+        let mx_total = proj * view;
+        let mx_ref: &[f32; 16] = mx_total.as_ref();
+        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            contents: bytemuck::cast_slice(mx_ref),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("texture_raycast"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/texture_raycast.wgsl"
-            ))),
+        let rasterize_aabbs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &rasterize_aabbs_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buf.as_entire_binding(),
+            }],
+            label: Some("rasterize_aabbs_bind_group"),
         });
 
-        let compute_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("compute_bind_layout"),
-                entries: &[
-                    // render target
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::StorageTexture {
-                            access: wgpu::StorageTextureAccess::WriteOnly,
-                            format,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                    // camera
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
-                        },
-                        count: None,
-                    },
-                    // voxel texture
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            sample_type: wgpu::TextureSampleType::Uint,
-                        },
-                        count: None,
-                    },
-                    // palette
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 3,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(
-                                (256 * 4 * std::mem::size_of::<f32>()) as u64,
-                            ),
-                        },
-                        count: None,
-                    },
-                ],
-            });
-
-        let voxel_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("voxel_texture"),
-            size: VOXEL_TEXTURE_SIZE,
-            mip_level_count: 5,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D3,
-            format: wgpu::TextureFormat::R8Uint,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        let voxel_texture_view = voxel_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        let mip_data = world.to_mip_bytes();
-
-        for (level, data) in mip_data.iter().enumerate() {
-            let level_size = VOXEL_TEXTURE_SIZE.width >> level;
-            let level_depth = VOXEL_TEXTURE_SIZE.depth_or_array_layers >> level;
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &voxel_texture,
-                    mip_level: level as u32,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                data,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(level_size),
-                    rows_per_image: Some(level_size),
-                },
-                wgpu::Extent3d {
-                    width: level_size,
-                    height: level_size,
-                    depth_or_array_layers: level_depth,
-                },
-            );
-        }
-
-        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("compute_bind_group"),
-            layout: &compute_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&voxel_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: palette_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        let compute_pipeline_layout =
+        let rasterize_aabbs_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("compute_pipeline_layout"),
-                bind_group_layouts: &[Some(&compute_bind_group_layout)],
+                label: Some("rasterize_aabbs_pipeline_layout"),
+                bind_group_layouts: &[Some(&rasterize_aabbs_bind_group_layout)],
                 immediate_size: 0,
             });
 
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("compute_pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
-
-        let blit_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("blit_shader"),
+        let rasterize_aabbs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rasterize_aabbs_shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/blit.wgsl"
+                "../assets/shaders/aabb_texture.wgsl"
             ))),
         });
 
-        let blit_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("blit_pipeline"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &blit_shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &blit_shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(config.format.into())],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let vertex_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: vertex_size as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 0,
+                    shader_location: 0,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 4 * 4,
+                    shader_location: 1,
+                },
+            ],
+        })];
 
-        let blit_view_bind_group_layout = blit_pipeline.get_bind_group_layout(0);
-        let blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit_view"),
-            layout: &blit_view_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&rt_view),
-            }],
-        });
+        let rasterize_aabbs_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: None,
+                layout: Some(&rasterize_aabbs_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &rasterize_aabbs_shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: Default::default(),
+                    buffers: &vertex_buffers,
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &rasterize_aabbs_shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(config.view_formats[0].into())],
+                }),
+                primitive: wgpu::PrimitiveState {
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
 
         App {
-            compute_pipeline,
-            camera_buffer,
-            compute_bind_group,
             player_controller,
-            blit_pipeline,
-            blit_view_bind_group,
+
             last_frame_update: Instant::now(),
             delta_time: Duration::default(),
             surface_width: width,
             surface_height: height,
+
             rt_texture,
-            voxel_texture_view,
-            compute_bind_group_layout,
-            blit_bind_group_layout: blit_view_bind_group_layout,
-            palette_buffer,
-            world_offset,
+
+            rasterize_aabbs_pipeline,
+            rasterize_aabbs_bind_group,
+            vertex_buf,
+            index_buf,
+            uniform_buf,
+
             heatmap: false,
         }
     }
@@ -398,45 +259,6 @@ impl App {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[format],
         });
-
-        let rt_view = self.rt_texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("rt_view"),
-            format: Some(format),
-            dimension: Some(wgpu::TextureViewDimension::D2),
-            ..Default::default()
-        });
-
-        self.compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("compute_bind_group"),
-            layout: &self.compute_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&rt_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.camera_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.voxel_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: self.palette_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        self.blit_view_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit_view"),
-            layout: &self.blit_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&rt_view),
-            }],
-        });
     }
 
     pub fn resize(
@@ -462,54 +284,33 @@ impl App {
         self.player_controller.fly_movement(self.delta_time, keys);
 
         let aspect = self.surface_width as f32 / self.surface_height as f32;
-        let camera_pos = self.player_controller.camera_position();
-        let camera_uniforms = CameraUniforms {
-            pos: [
-                camera_pos.x + self.world_offset[0],
-                camera_pos.y + self.world_offset[1],
-                camera_pos.z + self.world_offset[2],
-                1.0,
-            ],
-            view_inv: self.player_controller.view().inverse().to_cols_array_2d(),
-            proj_inv: glam::camera::rh::proj::vulkan::perspective(
-                70f32.to_radians(),
-                aspect,
-                0.1,
-                10000.0,
-            )
-            .inverse()
-            .to_cols_array_2d(),
-            heatmap: [self.heatmap as u32, 0, 0, 0],
-        };
 
-        queue.write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniforms));
+        let proj_mat = glam::camera::rh::proj::directx::perspective(
+            std::f32::consts::FRAC_PI_4,
+            aspect,
+            0.1,
+            10000.0,
+        );
+        let view_mat = self.player_controller.view();
+
+        let mx_total = proj_mat * view_mat;
+        let mx_ref: &[f32; 16] = mx_total.as_ref();
+
+        queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(mx_ref));
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
         {
-            let workgroup_x = self.surface_width.div_ceil(8);
-            let workgroup_y = self.surface_height.div_ceil(8);
-
-            let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("compute_pass"),
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.compute_pipeline);
-            cpass.set_bind_group(0, &self.compute_bind_group, &[]);
-            cpass.dispatch_workgroups(workgroup_x, workgroup_y, 1);
-        }
-
-        {
             let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("blit_pass"),
+                label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: StoreOp::Store,
+                        store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: None,
@@ -517,10 +318,14 @@ impl App {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-
-            rpass.set_pipeline(&self.blit_pipeline);
-            rpass.set_bind_group(0, Some(&self.blit_view_bind_group), &[]);
-            rpass.draw(0..3, 0..1);
+            rpass.push_debug_group("Prepare data for draw.");
+            rpass.set_pipeline(&self.rasterize_aabbs_pipeline);
+            rpass.set_bind_group(0, &self.rasterize_aabbs_bind_group, &[]);
+            rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
+            rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+            rpass.pop_debug_group();
+            rpass.insert_debug_marker("Draw!");
+            rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..1);
         }
 
         queue.submit(Some(encoder.finish()));

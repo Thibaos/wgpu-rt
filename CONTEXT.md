@@ -25,13 +25,3 @@ _Avoid_: Block size, grid resolution
 A 256-entry RGBA8 color table, sourced from the .vox file, that maps material
 indices to final surface colors. GPU-side it is pre-converted to float4.
 _Avoid_: Color table, LUT
-
-**Step Height**:
-The maximum vertical obstacle (0.5 m = 4 voxels) the player can automatically
-walk over without jumping. Larger steps become walls.
-_Avoid_: Auto-climb, ledge tolerance
-
-**Physics Tick**:
-A fixed 60 Hz update that advances velocity, integrates position, and resolves
-collisions. Decoupled from render frame rate via an accumulator.
-_Avoid_: Fixed timestep, game tick

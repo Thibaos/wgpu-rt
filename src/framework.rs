@@ -250,12 +250,7 @@ impl ApplicationHandler for Framework {
             window.clone(),
         ));
 
-        let app = App::init(
-            surface.config(),
-            &context.adapter,
-            &context.device,
-            &context.queue,
-        );
+        let app = App::init(surface.config(), &context.adapter, &context.device);
 
         self.window = Some(window);
         self.surface = surface;
@@ -347,8 +342,7 @@ impl ApplicationHandler for Framework {
                     window.pre_present_notify();
                     context.queue.present(frame);
                 }
-                // Always request redraw — even on acquire failure, we want to keep
-                // trying on the next frame.
+
                 window.request_redraw();
             }
             other => {

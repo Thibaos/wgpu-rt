@@ -10,11 +10,11 @@ struct Camera {
 @binding(2) @group(0) var voxel_data : texture_3d<u32>;
 @binding(3) @group(0) var<storage, read> palette : array<vec4<f32>>;
 
-const VOLUME_SIZE: u32 = 2048u;
-const VOLUME_SIZE_F: f32 = 2048.0;
+const VOLUME_SIZE: u32 = 1024u;
+const VOLUME_SIZE_F: f32 = 1024.0;
 const INF: f32 = 1e30;
 
-const MAX_STEPS: i32 = 32;
+const MAX_STEPS: i32 = 512;
 const MAX_MIP_LEVEL: i32 = 4;
 
 @compute
@@ -30,17 +30,21 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let uv = (vec2<f32>(pixel) + 0.5) / dims;
     let ndc = uv * 2.0 - 1.0;
 
-    let ray_origin = camera.pos.xyz;
+    let _ray_origin = camera.pos.xyz;
+    let ray_origin = vec3<f32>(_ray_origin.x, _ray_origin.z, _ray_origin.y);
 
     let clip_pos = vec4<f32>(ndc.x, ndc.y, 1.0, 1.0);
     let view_pos = camera.proj_inv * clip_pos;
     let view_dir = view_pos.xyz / view_pos.w;
-    let ray_dir = normalize((camera.view_inv * vec4<f32>(view_dir, 0.0)).xyz);
+    let _ray_dir = normalize((camera.view_inv * vec4<f32>(view_dir, 0.0)).xyz);
+
+    let ray_dir = vec3<f32>(_ray_dir.x, _ray_dir.z, _ray_dir.y);
 
     let inv_dir = 1.0 / ray_dir;
 
     let t0 = (vec3<f32>(0.0) - ray_origin) * inv_dir;
     let t1 = (vec3<f32>(VOLUME_SIZE_F) - ray_origin) * inv_dir;
+
 
     let t_min = min(t0, t1);
     let t_max = max(t0, t1);
@@ -48,7 +52,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let t_near = max(max(t_min.x, t_min.y), max(t_min.z, 0.0));
     let t_far  = min(min(t_max.x, t_max.y), t_max.z);
 
-    var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    var color = vec4<f32>(ray_dir.x, ray_dir.y, ray_dir.z, 0.0);
 
     if t_near > t_far {
         textureStore(output, pixel, color);
