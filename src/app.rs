@@ -5,14 +5,12 @@ use std::time::{Duration, Instant};
 use glam::UVec3;
 use wgpu::util::DeviceExt;
 
-use wgpu::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::render::{Instance, InstanceRaw};
-use crate::utils::{INDEX_COUNT, Vertex, create_vertices};
-use crate::world::chunk::{CHUNKS_X, CHUNKS_Y, CHUNKS_Z, TOTAL_CHUNKS};
+use crate::render::{INDEX_COUNT, Instance, InstanceRaw, Vertex, create_vertices};
+use crate::world::chunk::{CHUNK_TEXTURE_SIZE, CHUNKS_X, CHUNKS_Y, CHUNKS_Z, TOTAL_CHUNKS};
 
 pub struct App {
     pub player_controller: PlayerController,
@@ -24,9 +22,6 @@ pub struct App {
     // Surface size for projection
     surface_width: u32,
     surface_height: u32,
-
-    // RT output texture (recreated on resize)
-    rt_texture: wgpu::Texture,
 
     // Rasterize AABBs pipeline
     rasterize_aabbs_pipeline: wgpu::RenderPipeline,
@@ -71,24 +66,6 @@ impl App {
     ) -> Self {
         let width = config.width;
         let height = config.height;
-        let format = TextureFormat::Rgba8Unorm;
-
-        let rt_texture = device.create_texture(&TextureDescriptor {
-            label: Some("rt_output"),
-            size: Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: TextureUsages::STORAGE_BINDING
-                | TextureUsages::TEXTURE_BINDING
-                | TextureUsages::COPY_SRC,
-            view_formats: &[format],
-        });
 
         let aspect = width as f32 / height as f32;
         let mut player_controller = PlayerController::default();
@@ -237,9 +214,9 @@ impl App {
         let instances = (0..TOTAL_CHUNKS)
             .map(|i| Instance {
                 position: UVec3::new(
-                    i % CHUNKS_X,
-                    i / CHUNKS_X % CHUNKS_Y,
-                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z,
+                    i % CHUNKS_X * CHUNK_TEXTURE_SIZE.width,
+                    i / CHUNKS_X % CHUNKS_Y * CHUNK_TEXTURE_SIZE.height,
+                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z * CHUNK_TEXTURE_SIZE.depth_or_array_layers,
                 )
                 .as_vec3(),
             })
@@ -264,8 +241,6 @@ impl App {
             surface_width: width,
             surface_height: height,
 
-            rt_texture,
-
             rasterize_aabbs_pipeline,
             rasterize_aabbs_bind_group,
             vertex_buf,
@@ -288,38 +263,14 @@ impl App {
 
     pub fn update(&mut self, _event: WindowEvent) {}
 
-    fn recreate_render_target(&mut self, device: &wgpu::Device) {
-        let format = wgpu::TextureFormat::Rgba8Unorm;
-        let width = self.surface_width;
-        let height = self.surface_height;
-
-        self.rt_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("rt_output"),
-            size: wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage: wgpu::TextureUsages::STORAGE_BINDING
-                | wgpu::TextureUsages::TEXTURE_BINDING
-                | wgpu::TextureUsages::COPY_SRC,
-            view_formats: &[format],
-        });
-    }
-
     pub fn resize(
         &mut self,
         config: &wgpu::SurfaceConfiguration,
-        device: &wgpu::Device,
+        _device: &wgpu::Device,
         _queue: &wgpu::Queue,
     ) {
         self.surface_width = config.width;
         self.surface_height = config.height;
-        self.recreate_render_target(device);
     }
 
     pub fn render(

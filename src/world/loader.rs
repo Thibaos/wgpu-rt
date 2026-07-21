@@ -18,7 +18,6 @@ impl SceneGraphLoader {
         let instances = Self::collect_instances(&vox_data);
         let voxels = Self::collect_all_voxels(&instances);
 
-        // Compute scene bounding box to center the world around (0, 0, 0).
         let (world_offset, voxels) = Self::center_world(voxels);
 
         World {
@@ -28,8 +27,6 @@ impl SceneGraphLoader {
         }
     }
 
-    /// Compute a world-to-texture offset that centers the scene bounding box
-    /// in the 3D texture so that world origin maps to texture center.
     fn center_world(voxels: VoxelWorldData) -> ([i32; 3], VoxelWorldData) {
         let (w_x, w_y, w_z) = (
             (CHUNK_TEXTURE_SIZE.width / 2) as i32,
@@ -52,7 +49,6 @@ impl SceneGraphLoader {
             max.2 = max.2.max(z);
         }
 
-        // Center of the scene in world space.
         let cx = (min.0 as f32 + max.0 as f32) * 0.5;
         let cy = (min.1 as f32 + max.1 as f32) * 0.5;
         let cz = (min.2 as f32 + max.2 as f32) * 0.5;

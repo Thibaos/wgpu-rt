@@ -74,7 +74,6 @@ impl SurfaceWrapper {
             }
         }
 
-        // Final attempt: reconfigure and try one more time
         surface.configure(&context.device, config);
         match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)

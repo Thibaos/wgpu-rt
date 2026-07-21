@@ -16,18 +16,10 @@ const RIGHT: Key = Key::Character(SmolStr::new_static("d"));
 const UP: Key = Key::Named(NamedKey::Space);
 const CONTROL: Key = Key::Named(NamedKey::Control);
 
-/// World scale: 1 voxel = 1/8 meter, so 8 voxels per meter.
-const VOXELS_PER_METER: f32 = 8.0;
-
-const EYE_OFFSET: f32 = 1.65 * VOXELS_PER_METER; // 13.2 voxels (1.65 m from feet)
-
 pub struct PlayerController {
     pub speed: f32,
     pub sensitivity: f64,
     pub translation: Vec3,
-
-    pub velocity: Vec3,
-    pub is_grounded: bool,
 
     yaw: f32,
     pitch: f32,
@@ -39,19 +31,16 @@ pub struct PlayerController {
 impl Default for PlayerController {
     fn default() -> Self {
         let translation = Vec3::new(32.0, 5.0, 32.0);
-        let eye = translation + Vec3::new(0.0, EYE_OFFSET, 0.0);
 
         Self {
             speed: 32.0,
             sensitivity: 0.001,
             translation,
-            velocity: Vec3::ZERO,
-            is_grounded: false,
             yaw: 0.0,
             pitch: 0.0,
             view: glam::camera::rh::view::look_at_mat4(
-                eye,
-                Vec3::new(32.0, EYE_OFFSET, 0.0),
+                translation,
+                Vec3::new(32.0, 0.0, 0.0),
                 Vec3::Y,
             ),
             needs_view_update: true,
@@ -63,7 +52,6 @@ impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
 
-    /// Camera position in world space.
     pub fn camera_position(&self) -> Vec3 {
         self.translation
     }
