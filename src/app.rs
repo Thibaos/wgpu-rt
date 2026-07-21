@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use bytemuck::{Pod, Zeroable};
+use glam::UVec3;
 use wgpu::util::DeviceExt;
 
 use wgpu::{Extent3d, TextureDescriptor, TextureFormat, TextureUsages};
@@ -10,16 +10,9 @@ use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
+use crate::render::{Instance, InstanceRaw};
 use crate::utils::{INDEX_COUNT, Vertex, create_vertices};
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct CameraUniforms {
-    pos: [f32; 4],
-    view_inv: [[f32; 4]; 4],
-    proj_inv: [[f32; 4]; 4],
-    heatmap: [u32; 4],
-}
+use crate::world::chunk::{CHUNKS_X, CHUNKS_Y, CHUNKS_Z, TOTAL_CHUNKS};
 
 pub struct App {
     pub player_controller: PlayerController,
@@ -41,6 +34,9 @@ pub struct App {
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
     uniform_buf: wgpu::Buffer,
+
+    instances: Vec<Instance>,
+    instance_buffer: wgpu::Buffer,
 
     // Display traversal cost instead of voxel colors.
     heatmap: bool,
@@ -98,6 +94,7 @@ impl App {
         let mut player_controller = PlayerController::default();
 
         let vertex_size = std::mem::size_of::<Vertex>();
+        let instance_size = std::mem::size_of::<InstanceRaw>();
         let (vertex_data, index_data) = create_vertices();
 
         let vertex_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -114,7 +111,7 @@ impl App {
 
         let rasterize_aabbs_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: None,
+                label: Some("rasterize_aabbs_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX,
@@ -166,26 +163,54 @@ impl App {
             ))),
         });
 
-        let vertex_buffers = [Some(wgpu::VertexBufferLayout {
-            array_stride: vertex_size as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x4,
-                    offset: 0,
-                    shader_location: 0,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32x2,
-                    offset: 4 * 4,
-                    shader_location: 1,
-                },
-            ],
-        })];
+        let vertex_buffers = [
+            Some(wgpu::VertexBufferLayout {
+                array_stride: vertex_size as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 0,
+                        shader_location: 0,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x2,
+                        offset: 4 * 4,
+                        shader_location: 1,
+                    },
+                ],
+            }),
+            Some(wgpu::VertexBufferLayout {
+                array_stride: instance_size as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &[
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 0,
+                        shader_location: 2,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 4,
+                        shader_location: 3,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 8,
+                        shader_location: 4,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 12,
+                        shader_location: 5,
+                    },
+                ],
+            }),
+        ];
 
         let rasterize_aabbs_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: None,
+                label: Some("rasterize_aabbs_pipeline"),
                 layout: Some(&rasterize_aabbs_pipeline_layout),
                 vertex: wgpu::VertexState {
                     module: &rasterize_aabbs_shader,
@@ -209,6 +234,28 @@ impl App {
                 cache: None,
             });
 
+        let instances = (0..TOTAL_CHUNKS)
+            .map(|i| Instance {
+                position: UVec3::new(
+                    i % CHUNKS_X,
+                    i / CHUNKS_X % CHUNKS_Y,
+                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z,
+                )
+                .as_vec3(),
+            })
+            .collect::<Vec<Instance>>();
+
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance_buffer"),
+            contents: bytemuck::cast_slice(
+                &instances
+                    .iter()
+                    .map(Instance::to_raw)
+                    .collect::<Vec<InstanceRaw>>(),
+            ),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
         App {
             player_controller,
 
@@ -224,6 +271,9 @@ impl App {
             vertex_buf,
             index_buf,
             uniform_buf,
+
+            instances,
+            instance_buffer,
 
             heatmap: false,
         }
@@ -323,9 +373,10 @@ impl App {
             rpass.set_bind_group(0, &self.rasterize_aabbs_bind_group, &[]);
             rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
             rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
+            rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             rpass.pop_debug_group();
             rpass.insert_debug_marker("Draw!");
-            rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..1);
+            rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..self.instances.len() as u32);
         }
 
         queue.submit(Some(encoder.finish()));

@@ -26,7 +26,6 @@ pub struct PlayerController {
     pub sensitivity: f64,
     pub translation: Vec3,
 
-    /// FPS physics state
     pub velocity: Vec3,
     pub is_grounded: bool,
 

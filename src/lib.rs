@@ -1,5 +1,6 @@
-pub mod app;
+mod app;
 pub mod framework;
-pub mod player_controller;
-pub mod utils;
-pub mod world;
+mod player_controller;
+mod render;
+mod utils;
+mod world;
