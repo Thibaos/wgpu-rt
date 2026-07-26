@@ -1,5 +1,7 @@
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
+
+use crate::world::chunk::CHUNK_SIZE;
 
 pub const INDEX_COUNT: usize = 36;
 
@@ -23,7 +25,12 @@ pub struct Instance {
 impl Instance {
     pub fn to_raw(&self) -> InstanceRaw {
         InstanceRaw {
-            model: (Mat4::from_translation(self.position)).to_cols_array_2d(),
+            model: (Mat4::from_scale_rotation_translation(
+                CHUNK_SIZE,
+                Quat::IDENTITY,
+                self.position,
+            ))
+            .to_cols_array_2d(),
         }
     }
 }

@@ -221,7 +221,7 @@ impl App {
                     targets: &[Some(config.view_formats[0].into())],
                 }),
                 primitive: wgpu::PrimitiveState {
-                    cull_mode: Some(wgpu::Face::Back),
+                    cull_mode: Some(wgpu::Face::Front),
                     ..Default::default()
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
@@ -239,9 +239,11 @@ impl App {
         let instances = (0..TOTAL_CHUNKS)
             .map(|i| Instance {
                 position: UVec3::new(
-                    i % CHUNKS_X * CHUNK_TEXTURE_SIZE.width,
-                    i / CHUNKS_X % CHUNKS_Y * CHUNK_TEXTURE_SIZE.height,
-                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z * CHUNK_TEXTURE_SIZE.depth_or_array_layers,
+                    i % CHUNKS_X * CHUNK_TEXTURE_SIZE.width * 2,
+                    i / CHUNKS_X % CHUNKS_Y * CHUNK_TEXTURE_SIZE.height * 2,
+                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z
+                        * CHUNK_TEXTURE_SIZE.depth_or_array_layers
+                        * 2,
                 )
                 .as_vec3(),
             })
