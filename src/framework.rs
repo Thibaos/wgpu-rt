@@ -134,7 +134,7 @@ impl RenderContext {
                 required_features: (App::optional_features() & adapter.features())
                     | App::required_features(),
                 required_limits: needed_limits,
-                experimental_features: unsafe { wgpu::ExperimentalFeatures::enabled() },
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
             })
@@ -230,6 +230,22 @@ impl Framework {
             cursor_grab_mode: CursorGrabMode::None,
         }
     }
+
+    fn try_set_cursor_grab(window: &Window, desired: CursorGrabMode) -> CursorGrabMode {
+        match window.set_cursor_grab(desired) {
+            Ok(()) => desired,
+            Err(e) => {
+                log::warn!("set_cursor_grab({desired:?}) failed: {e}; trying Locked");
+                match window.set_cursor_grab(CursorGrabMode::Locked) {
+                    Ok(()) => CursorGrabMode::Locked,
+                    Err(e2) => {
+                        log::warn!("set_cursor_grab(Locked) also failed: {e2}; grab disabled");
+                        CursorGrabMode::None
+                    }
+                }
+            }
+        }
+    }
 }
 
 impl ApplicationHandler for Framework {
@@ -292,18 +308,13 @@ impl ApplicationHandler for Framework {
                 if let Key::Named(NamedKey::Escape) = &logical_key
                     && !self.pressed_keys.contains(&Key::Named(NamedKey::Escape))
                 {
-                    match self.cursor_grab_mode {
-                        CursorGrabMode::None => {
-                            self.cursor_grab_mode = CursorGrabMode::Confined;
-                            window.set_cursor_grab(CursorGrabMode::Confined).unwrap();
-                            window.set_cursor_visible(false);
-                        }
-                        _ => {
-                            self.cursor_grab_mode = CursorGrabMode::None;
-                            window.set_cursor_grab(CursorGrabMode::None).unwrap();
-                            window.set_cursor_visible(true);
-                        }
-                    }
+                    let desired = match self.cursor_grab_mode {
+                        CursorGrabMode::None => CursorGrabMode::Confined,
+                        _ => CursorGrabMode::None,
+                    };
+                    let applied = Self::try_set_cursor_grab(window, desired);
+                    self.cursor_grab_mode = applied;
+                    window.set_cursor_visible(self.cursor_grab_mode == CursorGrabMode::None);
                 }
 
                 if physical_key

@@ -14,13 +14,20 @@ honor its STOP conditions, and update your row when done.
 | 004  | Add color palette from .vox file to .world format and GPU rendering | P1 | M | — | DONE |
 | 005  | Replace tree64 with dense 3D-texture DDA ray marcher | P1 | L | — | REJECTED |
 | 006  | Build Tree64 GPU data from occupied voxels | P1 | L | — | DONE |
-| 007  | FPS player controller with world collision | P1 | L | — | TODO |
+| 007  | FPS player controller with world collision | P1 | L | — | REJECTED |
+| 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
+| 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
+| 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
 ## Dependency notes
 
 - 001 and 002 were independent — they touch different files (`src/app.rs` vs `src/framework.rs`).
+- 008 and 009 are independent small robustness fixes and can run before plan 010.
+- 010 depends on 008 and 009 because it changes the same framework/app render path
+  and the final smoke test should use the narrowed device feature request and
+  non-panicking cursor handling.
 - 003 has no dependencies on other plans.
 
 ## Findings considered and rejected
