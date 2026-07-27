@@ -123,7 +123,10 @@ impl RenderContext {
         )
         .await;
 
-        let needed_limits = App::required_limits().using_resolution(adapter.limits());
+        let mut needed_limits = App::required_limits().using_resolution(adapter.limits());
+        needed_limits.max_binding_array_elements_per_shader_stage =
+            crate::world::chunk::TOTAL_CHUNKS
+                .min(adapter.limits().max_binding_array_elements_per_shader_stage);
 
         let info = adapter.get_info();
         log::info!("Selected adapter: {} ({:?})", info.name, info.backend);
@@ -265,7 +268,12 @@ impl ApplicationHandler for Framework {
             window.clone(),
         ));
 
-        let app = App::init(surface.config(), &context.adapter, &context.device);
+        let app = App::init(
+            surface.config(),
+            &context.adapter,
+            &context.device,
+            &context.queue,
+        );
 
         self.window = Some(window);
         self.surface = surface;

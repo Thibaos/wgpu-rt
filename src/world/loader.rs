@@ -271,10 +271,15 @@ impl SceneGraphLoader {
 
     fn collect_all_voxels(instances: &[ModelInstance<'_>]) -> VoxelWorldData {
         let total_voxels: usize = instances.iter().map(|i| i.voxels.len()).sum();
+        let material_zero_count: usize = instances
+            .iter()
+            .map(|i| i.voxels.iter().filter(|v| v.i == 0).count())
+            .sum();
         log::info!(
-            "Collecting {} voxels across {} instances…",
+            "Collecting {} voxels across {} instances ({} material-0 to filter)…",
             total_voxels,
             instances.len(),
+            material_zero_count,
         );
 
         let result = instances
@@ -282,6 +287,11 @@ impl SceneGraphLoader {
             .fold(HashMap::new, |mut acc, instance| {
                 let transform = &instance.transform;
                 for voxel in instance.voxels {
+                    // Material 0 is the empty sentinel in .vox format and in our shader.
+                    // Skip it rather than storing empty air voxels.
+                    if voxel.i == 0 {
+                        continue;
+                    }
                     let local_engine = Vec3A::new(voxel.x as f32, voxel.y as f32, voxel.z as f32);
                     let world_f = transform.transform_point3a(local_engine);
                     let world_x = world_f.x.round() as i16;

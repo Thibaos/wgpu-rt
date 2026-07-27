@@ -1,16 +1,18 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::num::NonZeroU32;
 use std::time::{Duration, Instant};
 
-use glam::UVec3;
 use wgpu::util::DeviceExt;
 
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, SmolStr};
 
 use crate::player_controller::PlayerController;
-use crate::render::{INDEX_COUNT, Instance, InstanceRaw, Vertex, create_vertices};
-use crate::world::chunk::{CHUNK_TEXTURE_SIZE, CHUNKS_X, CHUNKS_Y, CHUNKS_Z, TOTAL_CHUNKS};
+use crate::render::{
+    CameraUniforms, INDEX_COUNT, Instance, InstanceRaw, VOXEL_SCALE, Vertex, create_vertices,
+};
+use crate::world::{World, chunk::CHUNK_TEXTURE_SIZE, create_palette_buffer};
 
 pub struct App {
     pub player_controller: PlayerController,
@@ -25,10 +27,16 @@ pub struct App {
 
     // Rasterize AABBs pipeline
     rasterize_aabbs_pipeline: wgpu::RenderPipeline,
-    rasterize_aabbs_bind_group: wgpu::BindGroup,
+    camera_bind_group: wgpu::BindGroup,
+    resource_bind_group: wgpu::BindGroup,
     vertex_buf: wgpu::Buffer,
     index_buf: wgpu::Buffer,
-    uniform_buf: wgpu::Buffer,
+    camera_uniform_buf: wgpu::Buffer,
+    _palette_buf: wgpu::Buffer,
+
+    // Retain texture resources for binding-array lifetime
+    _chunk_textures: Vec<wgpu::Texture>,
+    _chunk_texture_views: Vec<wgpu::TextureView>,
 
     instances: Vec<Instance>,
     instance_buffer: wgpu::Buffer,
@@ -60,7 +68,8 @@ impl App {
     pub const SRGB: bool = true;
 
     pub fn required_features() -> wgpu::Features {
-        wgpu::Features::TEXTURE_BINDING_ARRAY | wgpu::Features::SHADER_INT64
+        wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
     }
 
     pub fn optional_features() -> wgpu::Features {
@@ -80,14 +89,100 @@ impl App {
 
     pub fn init(
         config: &wgpu::SurfaceConfiguration,
-        _adapter: &wgpu::Adapter,
+        adapter: &wgpu::Adapter,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
     ) -> Self {
         let width = config.width;
         let height = config.height;
 
-        let aspect = width as f32 / height as f32;
-        let mut player_controller = PlayerController::default();
+        let player_controller = PlayerController::default();
+
+        // --- Load the voxel world ---
+        let world = World::load("assets/models/monu1.vox").expect("failed to load voxel world");
+
+        let voxel_count = world.voxels.len();
+        log::info!(
+            "Loaded {} voxels (material-0 already filtered by loader)",
+            voxel_count,
+        );
+
+        let palette = world.palette;
+        let chunks = world.into_chunks().expect("world does not fit chunk grid");
+
+        let non_empty_chunks: Vec<(usize, crate::world::chunk::Chunk)> = chunks
+            .into_iter()
+            .enumerate()
+            .filter(|(_, c)| !c.is_empty())
+            .collect();
+
+        let texture_count = non_empty_chunks.len().max(1);
+        log::info!(
+            "Non-empty chunks: {}, texture binding count: {}",
+            non_empty_chunks.len(),
+            texture_count,
+        );
+
+        // --- Check adapter limits ---
+        let max_binding = adapter.limits().max_binding_array_elements_per_shader_stage;
+        log::info!(
+            "Adapter max_binding_array_elements_per_shader_stage: {}",
+            max_binding,
+        );
+        if (max_binding as usize) < texture_count {
+            panic!(
+                "STOP: required binding array count {} exceeds adapter limit {}",
+                texture_count, max_binding,
+            );
+        }
+
+        let chunk_side_world = CHUNK_TEXTURE_SIZE.width as f32 * VOXEL_SCALE;
+        // let half_chunk_world = chunk_side_world * 0.5;
+
+        let mut chunk_textures: Vec<wgpu::Texture> = Vec::with_capacity(texture_count);
+        let mut chunk_texture_views: Vec<wgpu::TextureView> = Vec::with_capacity(texture_count);
+        let mut instances: Vec<Instance> = Vec::with_capacity(texture_count);
+
+        if non_empty_chunks.is_empty() {
+            let dummy_chunk = crate::world::chunk::Chunk::new(glam::IVec3::ZERO);
+            let tex = dummy_chunk.create_texture(device, queue);
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            chunk_textures.push(tex);
+            chunk_texture_views.push(view);
+        } else {
+            for (_grid_index, chunk) in &non_empty_chunks {
+                let tex = chunk.create_texture(device, queue);
+                let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+                let gp = chunk.grid_position();
+                let position = glam::Vec3::new(
+                    gp.x as f32 * chunk_side_world,
+                    gp.y as f32 * chunk_side_world,
+                    gp.z as f32 * chunk_side_world,
+                );
+
+                instances.push(Instance { position: position });
+
+                chunk_textures.push(tex);
+                chunk_texture_views.push(view);
+            }
+        }
+
+        let texture_count_final = chunk_texture_views.len();
+        log::info!(
+            "Created {} chunk textures, {} draw instances",
+            texture_count_final,
+            instances.len(),
+        );
+
+        let palette_buf = create_palette_buffer(device, &palette);
+
+        let camera_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("camera_uniform"),
+            size: std::mem::size_of::<CameraUniforms>() as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let vertex_size = std::mem::size_of::<Vertex>();
         let instance_size = std::mem::size_of::<InstanceRaw>();
@@ -105,53 +200,101 @@ impl App {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let rasterize_aabbs_bind_group_layout =
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("instance_buffer"),
+            contents: bytemuck::cast_slice(
+                &instances
+                    .iter()
+                    .map(Instance::to_raw)
+                    .collect::<Vec<InstanceRaw>>(),
+            ),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let texture_view_refs: Vec<&wgpu::TextureView> = chunk_texture_views.iter().collect();
+        let bind_group_count = NonZeroU32::new(texture_count_final as u32).unwrap();
+
+        let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("rasterize_aabbs_bind_group_layout"),
+                label: Some("camera_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(64),
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<CameraUniforms>() as wgpu::BufferAddress,
+                        ),
                     },
                     count: None,
                 }],
             });
 
-        let proj = glam::camera::rh::proj::directx::perspective(
-            std::f32::consts::FRAC_PI_4,
-            aspect,
-            0.1,
-            10000.0,
-        );
-        let view = player_controller.view();
+        let resource_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("resource_bind_group_layout"),
+                entries: &[
+                    // palette
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(256 * 4 * 4),
+                        },
+                        count: None,
+                    },
+                    // chunk textures
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            multisampled: false,
+                        },
+                        count: Some(bind_group_count),
+                    },
+                ],
+            });
 
-        let mx_total = proj * view;
-        let mx_ref: &[f32; 16] = mx_total.as_ref();
-        let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Uniform Buffer"),
-            contents: bytemuck::cast_slice(mx_ref),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let rasterize_aabbs_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &rasterize_aabbs_bind_group_layout,
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &camera_bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: uniform_buf.as_entire_binding(),
+                resource: camera_uniform_buf.as_entire_binding(),
             }],
-            label: Some("rasterize_aabbs_bind_group"),
+            label: Some("camera_bind_group"),
+        });
+
+        let resource_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &resource_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: palette_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureViewArray(&texture_view_refs),
+                },
+            ],
+            label: Some("resource_bind_group"),
         });
 
         let rasterize_aabbs_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("rasterize_aabbs_pipeline_layout"),
-                bind_group_layouts: &[Some(&rasterize_aabbs_bind_group_layout)],
-                immediate_size: 0,
+                bind_group_layouts: &[
+                    Some(&camera_bind_group_layout),
+                    Some(&resource_bind_group_layout),
+                ],
+                ..Default::default()
             });
 
+        // --- Shader ---
         let rasterize_aabbs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rasterize_aabbs_shader"),
             source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
@@ -164,11 +307,13 @@ impl App {
                 array_stride: vertex_size as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
+                    // position
                     wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x4,
-                        offset: 4 * 0,
+                        offset: 0,
                         shader_location: 0,
                     },
+                    // uv
                     wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x2,
                         offset: 4 * 4,
@@ -180,9 +325,10 @@ impl App {
                 array_stride: instance_size as wgpu::BufferAddress,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &[
+                    // mat4x4 transform
                     wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x4,
-                        offset: 4 * 0,
+                        offset: 0,
                         shader_location: 2,
                     },
                     wgpu::VertexAttribute {
@@ -199,6 +345,11 @@ impl App {
                         format: wgpu::VertexFormat::Float32x4,
                         offset: 4 * 12,
                         shader_location: 5,
+                    },
+                    wgpu::VertexAttribute {
+                        format: wgpu::VertexFormat::Float32x4,
+                        offset: 4 * 16,
+                        shader_location: 6,
                     },
                 ],
             }),
@@ -236,30 +387,6 @@ impl App {
                 cache: None,
             });
 
-        let instances = (0..TOTAL_CHUNKS)
-            .map(|i| Instance {
-                position: UVec3::new(
-                    i % CHUNKS_X * CHUNK_TEXTURE_SIZE.width * 2,
-                    i / CHUNKS_X % CHUNKS_Y * CHUNK_TEXTURE_SIZE.height * 2,
-                    i / (CHUNKS_X * CHUNKS_Y) % CHUNKS_Z
-                        * CHUNK_TEXTURE_SIZE.depth_or_array_layers
-                        * 2,
-                )
-                .as_vec3(),
-            })
-            .collect::<Vec<Instance>>();
-
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("instance_buffer"),
-            contents: bytemuck::cast_slice(
-                &instances
-                    .iter()
-                    .map(Instance::to_raw)
-                    .collect::<Vec<InstanceRaw>>(),
-            ),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-
         let depth_texture = create_depth_texture(device, width, height);
 
         App {
@@ -271,10 +398,15 @@ impl App {
             surface_height: height,
 
             rasterize_aabbs_pipeline,
-            rasterize_aabbs_bind_group,
+            camera_bind_group,
+            resource_bind_group,
             vertex_buf,
             index_buf,
-            uniform_buf,
+            camera_uniform_buf,
+            _palette_buf: palette_buf,
+
+            _chunk_textures: chunk_textures,
+            _chunk_texture_views: chunk_texture_views,
 
             instances,
             instance_buffer,
@@ -326,10 +458,29 @@ impl App {
         );
         let view_mat = self.player_controller.view();
 
-        let mx_total = proj_mat * view_mat;
-        let mx_ref: &[f32; 16] = mx_total.as_ref();
+        let view_proj = proj_mat * view_mat;
+        let view_inv = view_mat.inverse();
+        let proj_inv = proj_mat.inverse();
+        let camera_pos = self.player_controller.camera_position();
 
-        queue.write_buffer(&self.uniform_buf, 0, bytemuck::cast_slice(mx_ref));
+        let camera_uniforms = CameraUniforms {
+            camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 0.0],
+            view_inv: view_inv.to_cols_array_2d(),
+            proj_inv: proj_inv.to_cols_array_2d(),
+            view_proj: view_proj.to_cols_array_2d(),
+            viewport_and_heatmap: [
+                self.surface_width as f32,
+                self.surface_height as f32,
+                if self.heatmap { 1.0 } else { 0.0 },
+                0.0,
+            ],
+        };
+
+        queue.write_buffer(
+            &self.camera_uniform_buf,
+            0,
+            bytemuck::cast_slice(&[camera_uniforms]),
+        );
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -364,13 +515,17 @@ impl App {
             });
             rpass.push_debug_group("Prepare data for draw.");
             rpass.set_pipeline(&self.rasterize_aabbs_pipeline);
-            rpass.set_bind_group(0, &self.rasterize_aabbs_bind_group, &[]);
+            rpass.set_bind_group(0, &self.camera_bind_group, &[]);
+            rpass.set_bind_group(1, &self.resource_bind_group, &[]);
             rpass.set_index_buffer(self.index_buf.slice(..), wgpu::IndexFormat::Uint16);
             rpass.set_vertex_buffer(0, self.vertex_buf.slice(..));
             rpass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             rpass.pop_debug_group();
-            rpass.insert_debug_marker("Draw!");
-            rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..self.instances.len() as u32);
+
+            if !self.instances.is_empty() {
+                rpass.insert_debug_marker("Draw!");
+                rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..self.instances.len() as u32);
+            }
         }
 
         queue.submit(Some(encoder.finish()));

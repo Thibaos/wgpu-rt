@@ -4,6 +4,7 @@ use glam::{Mat4, Quat, Vec3};
 use crate::world::chunk::CHUNK_SIZE;
 
 pub const INDEX_COUNT: usize = 36;
+pub const VOXEL_SCALE: f32 = 0.125;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -16,6 +17,7 @@ pub(crate) struct Vertex {
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub struct InstanceRaw {
     model: [[f32; 4]; 4],
+    chunk_origin: [f32; 4],
 }
 
 pub struct Instance {
@@ -24,24 +26,28 @@ pub struct Instance {
 
 impl Instance {
     pub fn to_raw(&self) -> InstanceRaw {
+        let half_chunk_world = CHUNK_SIZE * VOXEL_SCALE * 0.5;
+        let center = self.position + half_chunk_world;
         InstanceRaw {
             model: (Mat4::from_scale_rotation_translation(
-                CHUNK_SIZE,
+                half_chunk_world,
                 Quat::IDENTITY,
-                self.position,
+                center,
             ))
             .to_cols_array_2d(),
+            chunk_origin: [self.position.x, self.position.y, self.position.z, 0.0],
         }
     }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct CameraUniforms {
-    pos: [f32; 4],
-    view_inv: [[f32; 4]; 4],
-    proj_inv: [[f32; 4]; 4],
-    heatmap: [u32; 4],
+pub(crate) struct CameraUniforms {
+    pub camera_pos: [f32; 4],
+    pub view_inv: [[f32; 4]; 4],
+    pub proj_inv: [[f32; 4]; 4],
+    pub view_proj: [[f32; 4]; 4],
+    pub viewport_and_heatmap: [f32; 4],
 }
 
 const fn vertex(pos: [i8; 3], tc: [i8; 2]) -> Vertex {

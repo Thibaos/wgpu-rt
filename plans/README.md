@@ -17,7 +17,7 @@ honor its STOP conditions, and update your row when done.
 | 007  | FPS player controller with world collision | P1 | L | — | REJECTED |
 | 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
 | 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
-| 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | TODO |
+| 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | DONE |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
