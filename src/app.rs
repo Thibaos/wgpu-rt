@@ -98,7 +98,7 @@ impl App {
 
         let player_controller = PlayerController::default();
 
-        let world = World::load("assets/models/monu1.vox").expect("failed to load voxel world");
+        let world = World::load("assets/models/bistro_sm.vox").expect("failed to load voxel world");
 
         let voxel_count = world.voxels.len();
         log::info!(
@@ -107,7 +107,7 @@ impl App {
         );
 
         let palette = world.palette;
-        let chunks = world.into_chunks().expect("world does not fit chunk grid");
+        let chunks = world.into_chunks();
 
         let non_empty_chunks: Vec<(usize, crate::world::chunk::Chunk)> = chunks
             .into_iter()
@@ -159,7 +159,7 @@ impl App {
                     gp.z as f32 * chunk_side_world,
                 );
 
-                instances.push(Instance { position: position });
+                instances.push(Instance { position });
 
                 chunk_textures.push(tex);
                 chunk_texture_views.push(view);

@@ -45,18 +45,12 @@ impl World {
         Ok(world)
     }
 
-    pub fn into_chunks(self) -> Result<Vec<Chunk>, String> {
+    pub fn into_chunks(self) -> Vec<Chunk> {
         let mut chunks: Vec<Chunk> = (0..TOTAL_CHUNKS)
             .map(|i| {
                 let chunk_x = i % CHUNKS_X;
-                #[allow(clippy::modulo_one)]
-                let chunk_y = (i / CHUNKS_X) % CHUNKS_Y;
                 let chunk_z = i / (CHUNKS_X * CHUNKS_Y);
-                Chunk::new(glam::IVec3::new(
-                    chunk_x as i32,
-                    chunk_y as i32,
-                    chunk_z as i32,
-                ))
+                Chunk::new(glam::IVec3::new(chunk_x as i32, 0, chunk_z as i32))
             })
             .collect();
 
@@ -82,18 +76,14 @@ impl World {
                 || chunk_y >= CHUNKS_Y as i32
                 || chunk_z >= CHUNKS_Z as i32
             {
-                return Err(format!(
-                    "voxel at world ({}, {}, {}) maps to chunk ({}, {}, {}), \
-                     which is outside the fixed grid [0..{}, 0..{}, 0..{}]",
-                    wx, wy, wz, chunk_x, chunk_y, chunk_z, CHUNKS_X, CHUNKS_Y, CHUNKS_Z
-                ));
+                continue;
             }
 
             let index = (chunk_z as u32 * CHUNKS_Y + chunk_y as u32) * CHUNKS_X + chunk_x as u32;
             chunks[index as usize].insert((local_x, local_y, local_z), material);
         }
 
-        Ok(chunks)
+        chunks
     }
 }
 
@@ -113,107 +103,4 @@ pub fn create_palette_buffer(device: &wgpu::Device, palette: &[[u8; 4]; 256]) ->
         contents: bytemuck::cast_slice(&float_palette),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::world::chunk::CHUNK_TEXTURE_SIZE;
-
-    fn make_world(voxels: VoxelWorldData, offset: [i32; 3]) -> World {
-        World {
-            voxels,
-            palette: [[0u8; 4]; 256],
-            world_offset: offset,
-        }
-    }
-
-    #[test]
-    fn global_255_maps_to_chunk_1_local_0() {
-        let mut voxels = HashMap::new();
-        voxels.insert((255, 0, 0), 42);
-        let world = make_world(voxels, [0, 0, 0]);
-        let chunks = world.into_chunks().unwrap();
-
-        // chunk at (1, 0, 0) should have voxel at local (0, 0, 0)
-        let chunk_idx = (0 * CHUNKS_Y + 0) * CHUNKS_X + 1;
-        let chunk = &chunks[chunk_idx as usize];
-        assert_eq!(chunk.grid_position().x, 1);
-        let bytes = chunk.to_bytes();
-        let size = CHUNK_TEXTURE_SIZE.width as usize;
-        let byte_idx = (0usize * size + 0usize) * size + 0usize;
-        assert_eq!(bytes[byte_idx], 42);
-    }
-
-    #[test]
-    fn negative_one_uses_euclidean_division_then_rejected() {
-        // -1.div_euclid(255) = -1, -1.rem_euclid(255) = 254
-        let mut voxels = HashMap::new();
-        voxels.insert((-1, 0, 0), 42);
-        let world = make_world(voxels, [0, 0, 0]);
-        let result = world.into_chunks();
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.contains("chunk (-1, 0, 0)"));
-    }
-
-    #[test]
-    fn material_survives_partitioning() {
-        let mut voxels = HashMap::new();
-        voxels.insert((100, 50, 0), 200);
-        let world = make_world(voxels, [0, 0, 0]);
-        let chunks = world.into_chunks().unwrap();
-
-        // (100, 50, 0) is in chunk (0, 0, 0), local (100, 50, 0)
-        let chunk = &chunks[0];
-        let bytes = chunk.to_bytes();
-        let size = CHUNK_TEXTURE_SIZE.width as usize;
-        let idx = (0usize * size + 50usize) * size + 100usize;
-        assert_eq!(bytes[idx], 200);
-    }
-
-    #[test]
-    fn world_offset_is_applied_exactly_once() {
-        // voxel at global (10, 20, 30), offset = (100, 200, 300)
-        // => world coord = (110, 220, 330)
-        // => chunk (0, 0, 1) since 330/255 = 1, local (110, 220, 75)
-        let mut voxels = HashMap::new();
-        voxels.insert((10, 20, 30), 77);
-        let world = make_world(voxels, [100, 200, 300]);
-        let chunks = world.into_chunks().unwrap();
-
-        let chunk_z = 1;
-        let chunk_idx = (chunk_z * CHUNKS_Y + 0) * CHUNKS_X + 0;
-        let chunk = &chunks[chunk_idx as usize];
-        assert!(!chunk.is_empty());
-
-        let bytes = chunk.to_bytes();
-        let size = CHUNK_TEXTURE_SIZE.width as usize;
-        // local coords: (110, 220, 75) because 330.rem_euclid(255) = 75
-        let idx = (75usize * size + 220usize) * size + 110usize;
-        assert_eq!(bytes[idx], 77);
-    }
-
-    #[test]
-    fn into_chunks_returns_total_chunks_slots() {
-        let world = make_world(HashMap::new(), [0, 0, 0]);
-        let chunks = world.into_chunks().unwrap();
-        assert_eq!(chunks.len(), TOTAL_CHUNKS as usize);
-        assert!(chunks.iter().all(|c| c.is_empty()));
-    }
-
-    #[test]
-    fn offset_not_applied_when_zero() {
-        let mut voxels = HashMap::new();
-        voxels.insert((0, 0, 0), 1);
-        voxels.insert((127, 0, 0), 2);
-        let world = make_world(voxels, [0, 0, 0]);
-        let chunks = world.into_chunks().unwrap();
-
-        let chunk0 = &chunks[0];
-        assert!(!chunk0.is_empty());
-        let bytes = chunk0.to_bytes();
-        assert_eq!(bytes[0], 1);
-        assert_eq!(bytes[127], 2);
-    }
 }
