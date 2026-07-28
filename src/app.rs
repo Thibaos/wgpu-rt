@@ -98,7 +98,6 @@ impl App {
 
         let player_controller = PlayerController::default();
 
-        // --- Load the voxel world ---
         let world = World::load("assets/models/monu1.vox").expect("failed to load voxel world");
 
         let voxel_count = world.voxels.len();
@@ -123,7 +122,6 @@ impl App {
             texture_count,
         );
 
-        // --- Check adapter limits ---
         let max_binding = adapter.limits().max_binding_array_elements_per_shader_stage;
         log::info!(
             "Adapter max_binding_array_elements_per_shader_stage: {}",
@@ -294,12 +292,13 @@ impl App {
                 ..Default::default()
             });
 
-        // --- Shader ---
-        let rasterize_aabbs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rasterize_aabbs_shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/aabb_texture.wgsl"
-            ))),
+        let vert_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rasterize_aabbs_vert"),
+            source: spirv_from_bytes(include_bytes!("../assets/shaders/chunk.vert.spv")),
+        });
+        let frag_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rasterize_aabbs_frag"),
+            source: spirv_from_bytes(include_bytes!("../assets/shaders/chunk.frag.spv")),
         });
 
         let vertex_buffers = [
@@ -346,6 +345,7 @@ impl App {
                         offset: 4 * 12,
                         shader_location: 5,
                     },
+                    // chunk origin
                     wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x4,
                         offset: 4 * 16,
@@ -360,14 +360,14 @@ impl App {
                 label: Some("rasterize_aabbs_pipeline"),
                 layout: Some(&rasterize_aabbs_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &rasterize_aabbs_shader,
-                    entry_point: Some("vs_main"),
+                    module: &vert_shader,
+                    entry_point: Some("main"),
                     compilation_options: Default::default(),
                     buffers: &vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &rasterize_aabbs_shader,
-                    entry_point: Some("fs_main"),
+                    module: &frag_shader,
+                    entry_point: Some("main"),
                     compilation_options: Default::default(),
                     targets: &[Some(config.view_formats[0].into())],
                 }),
@@ -542,4 +542,16 @@ impl App {
     pub fn update_look_position(&mut self, delta: (f64, f64)) {
         self.player_controller.rotate(delta);
     }
+}
+
+/// Convert SPIR-V byte slice to a `ShaderSource`, trying zero-copy first.
+fn spirv_from_bytes(bytes: &[u8]) -> wgpu::ShaderSource<'_> {
+    if let Ok(words) = bytemuck::try_cast_slice::<u8, u32>(bytes) {
+        return wgpu::ShaderSource::SpirV(Cow::Borrowed(words));
+    }
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect();
+    wgpu::ShaderSource::SpirV(Cow::Owned(words))
 }

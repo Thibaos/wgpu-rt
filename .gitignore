@@ -5,3 +5,4 @@
 .pi-subagents/
 *.world
 imgui.ini
+*.spv

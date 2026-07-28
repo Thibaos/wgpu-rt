@@ -1,0 +1,62 @@
+static const float INF = 1e30;
+static const float NEG_INF = -1e30;
+static const int MAX_STEPS = 768;
+static const float CHUNK_SIDE = 255.0;
+static const float VOXEL_SCALE = 0.125;
+static const float CHUNK_WORLD = CHUNK_SIDE * VOXEL_SCALE;
+static const float ENTRY_EPSILON = 1e-4;
+
+[[vk::binding(0, 0)]] cbuffer CameraData {
+    float4 camera_pos;
+    float4x4 view_inv;
+    float4x4 proj_inv;
+    float4x4 view_proj;
+    float4 viewport_and_heatmap;
+} camera;
+
+struct VSInput {
+    [[vk::location(0)]] float4 position;
+    [[vk::location(1)]] float2 tex_coord;
+    [[vk::location(2)]] float4 model_matrix_0;
+    [[vk::location(3)]] float4 model_matrix_1;
+    [[vk::location(4)]] float4 model_matrix_2;
+    [[vk::location(5)]] float4 model_matrix_3;
+    [[vk::location(6)]] float4 chunk_origin_in;
+};
+
+struct VertexOutput {
+    float4 position : SV_Position;
+    float2 tex_coord : TEXCOORD0;
+    nointerpolation uint chunk_id : TEXCOORD1;
+    nointerpolation float3 chunk_origin : TEXCOORD2;
+};
+
+struct FragmentOutput {
+    float4 color : SV_Target0;
+    float depth : SV_Depth;
+};
+
+[shader("vertex")]
+VertexOutput vs_main(VSInput input)
+{
+    float4x4 model_matrix = transpose(float4x4(
+        input.model_matrix_0,
+        input.model_matrix_1,
+        input.model_matrix_2,
+        input.model_matrix_3));
+    VertexOutput result;
+    result.position = mul(camera.view_proj, mul(model_matrix, input.position));
+    result.tex_coord = input.tex_coord;
+    result.chunk_id = 0;
+    result.chunk_origin = input.chunk_origin_in.xyz;
+    return result;
+}
+
+[shader("fragment")]
+FragmentOutput fs_main(VertexOutput v)
+{
+    FragmentOutput result;
+    result.color = float4(v.tex_coord.x, v.tex_coord.y, 0.0, 1.0);
+    result.depth = 0.0;
+    return result;
+}
