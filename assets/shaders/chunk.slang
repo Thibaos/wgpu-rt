@@ -53,7 +53,7 @@ struct FragmentOutput {
 };
 
 [shader("vertex")]
-VertexOutput vs_main(VSInput input) {
+VertexOutput vs_main(VSInput input, uint instance_index: SV_VulkanInstanceID) {
   float4x4 model_matrix =
       transpose(float4x4(input.model_matrix_0, input.model_matrix_1,
                          input.model_matrix_2, input.model_matrix_3));
@@ -61,7 +61,7 @@ VertexOutput vs_main(VSInput input) {
   float4 world_pos4 = mul(model_matrix, input.position);
   result.position = mul(camera.view_proj, world_pos4);
   result.tex_coord = input.tex_coord;
-  result.chunk_id = 0;
+  result.chunk_id = instance_index;
   result.chunk_origin = input.chunk_origin_in.xyz;
   result.world_pos = world_pos4.xyz;
   return result;
@@ -69,9 +69,15 @@ VertexOutput vs_main(VSInput input) {
 
 [shader("fragment")]
 FragmentOutput fs_main(VertexOutput v) {
+  uint vox = voxel_textures[v.chunk_id].Load(int4(0));
   FragmentOutput result;
   float4 clip_pos = mul(camera.view_proj, float4(v.world_pos, 1.0));
   result.color = float4(v.tex_coord.x, v.tex_coord.y, 0.0, 1.0);
   result.depth = clip_pos.z / clip_pos.w;
+
+  if (vox != 0) {
+    result.color = palette[vox];
+  }
+
   return result;
 }
