@@ -15,3 +15,6 @@ rayon = "1"
 tree64 = { git = "https://github.com/expenses/tree64", version = "0.1.0" }
 wgpu = { version = "30", features = ["spirv"] }
 winit = "0.30"
+
+[dev-dependencies]
+naga = { version = "30.0.0", features = ["wgsl-in"] }

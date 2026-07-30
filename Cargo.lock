@@ -2479,6 +2479,7 @@ dependencies = [
  "env_logger",
  "glam 0.33.2",
  "log",
+ "naga",
  "pollster",
  "rayon",
  "tree64",

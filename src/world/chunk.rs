@@ -6,9 +6,9 @@ use wgpu::Extent3d;
 use super::MIP_LEVELS;
 
 pub const CHUNK_TEXTURE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
-    width: u8::MAX as u32,
-    height: u8::MAX as u32,
-    depth_or_array_layers: u8::MAX as u32,
+    width: 256,
+    height: 256,
+    depth_or_array_layers: 256,
 };
 
 pub const CHUNK_SIZE: Vec3 = Vec3 {
@@ -56,14 +56,20 @@ impl Chunk {
         self.flatten_voxels(CHUNK_TEXTURE_SIZE.width)
     }
 
-    pub fn to_mip_bytes(&self) -> [Vec<u8>; MIP_LEVELS] {
-        let size0 = CHUNK_TEXTURE_SIZE.width;
-        let mip0 = self.flatten_voxels(size0);
-        let mip1 = Self::downsample_max(&mip0, size0);
-        let mip2 = Self::downsample_max(&mip1, size0 / 2);
-        let mip3 = Self::downsample_max(&mip2, size0 / 4);
-        let mip4 = Self::downsample_max(&mip3, size0 / 8);
-        [mip0, mip1, mip2, mip3, mip4]
+    pub fn to_mip_bytes(&self) -> Vec<Vec<u8>> {
+        // MIP_LEVELS levels: 256 -> 128 -> ... -> 1. Each coarser cell stores the
+        // first non-zero material found in its 2x2x2 children (occupancy, not a
+        // meaningful aggregate) so the GPU can ask "is there anything below?".
+        let mut levels = Vec::with_capacity(MIP_LEVELS);
+        let mut current = self.flatten_voxels(CHUNK_TEXTURE_SIZE.width);
+        levels.push(current.clone());
+        let mut current_size = CHUNK_TEXTURE_SIZE.width;
+        for _ in 1..MIP_LEVELS {
+            current = Self::downsample_occupancy(&current, current_size);
+            levels.push(current.clone());
+            current_size /= 2;
+        }
+        levels
     }
 
     fn flatten_voxels(&self, size: u32) -> Vec<u8> {
@@ -77,7 +83,7 @@ impl Chunk {
         bytes
     }
 
-    fn downsample_max(src: &[u8], src_size: u32) -> Vec<u8> {
+    fn downsample_occupancy(src: &[u8], src_size: u32) -> Vec<u8> {
         let dst_size = src_size / 2;
         let total = (dst_size as usize) * (dst_size as usize) * (dst_size as usize);
         let mut dst = vec![0u8; total];
@@ -172,9 +178,9 @@ mod tests {
     fn local_max_maps_to_final_byte() {
         let size = CHUNK_TEXTURE_SIZE.width as usize;
         let mut chunk = Chunk::new(IVec3::ZERO);
-        let lx = 254u8;
-        let ly = 254u8;
-        let lz = 254u8;
+        let lx = 255u8;
+        let ly = 255u8;
+        let lz = 255u8;
         chunk.insert((lx, ly, lz), 99);
         let bytes = chunk.to_bytes();
         let expected_idx = (lz as usize * size + ly as usize) * size + lx as usize;
@@ -186,7 +192,7 @@ mod tests {
     fn empty_chunk_produces_full_sized_byte_buffer() {
         let chunk = Chunk::new(IVec3::new(0, 0, 0));
         let bytes = chunk.to_bytes();
-        let expected_size = 255 * 255 * 255;
+        let expected_size = 256 * 256 * 256;
         assert_eq!(bytes.len(), expected_size);
         assert!(bytes.iter().all(|&b| b == 0));
     }
@@ -212,5 +218,45 @@ mod tests {
         let mut chunk = Chunk::new(IVec3::ZERO);
         chunk.insert((0, 0, 0), 1);
         assert!(!chunk.is_empty());
+    }
+
+    #[test]
+    fn to_mip_bytes_produces_all_levels_with_halving_sizes() {
+        let mut chunk = Chunk::new(IVec3::ZERO);
+        chunk.insert((0, 0, 0), 7);
+        let mips = chunk.to_mip_bytes();
+        assert_eq!(mips.len(), MIP_LEVELS);
+        let mut expected = CHUNK_TEXTURE_SIZE.width;
+        for level in &mips {
+            let dim = expected as usize;
+            assert_eq!(level.len(), dim * dim * dim);
+            expected /= 2;
+        }
+        // Last level is 1^3.
+        assert_eq!(expected, 0);
+        let last = mips.last().unwrap();
+        assert_eq!(last.len(), 1);
+        // The single voxel lives in the bottom corner, so the 1x1x1 root is occupied.
+        assert_eq!(last[0], 7);
+    }
+
+    #[test]
+    fn downsample_occupancy_propagates_first_found_material() {
+        // A single occupied voxel anywhere in a 2x2x2 block makes its parent non-zero,
+        // carrying the first-found material.
+        let src_size = 2u32;
+        let src = vec![0u8, 5, 0, 0, 0, 0, 0, 9]; // (1,0,0)=5, (1,1,1)=9
+        let dst = Chunk::downsample_occupancy(&src, src_size);
+        assert_eq!(dst.len(), 1);
+        assert_ne!(dst[0], 0);
+        // First-found in iteration order dz,dy,dx: (1,0,0)=5 wins over (1,1,1)=9.
+        assert_eq!(dst[0], 5);
+    }
+
+    #[test]
+    fn downsample_occupancy_yields_zero_for_empty_block() {
+        let src = vec![0u8; 8];
+        let dst = Chunk::downsample_occupancy(&src, 2u32);
+        assert_eq!(dst, vec![0u8]);
     }
 }

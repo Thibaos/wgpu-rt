@@ -9,7 +9,7 @@ use wgpu::util::DeviceExt;
 use crate::world::chunk::{CHUNKS_X, CHUNKS_Y, CHUNKS_Z, Chunk, TOTAL_CHUNKS};
 use crate::world::loader::SceneGraphLoader;
 
-pub const MIP_LEVELS: usize = 5;
+pub const MIP_LEVELS: usize = 9;
 
 pub type VoxelWorldData = HashMap<(i16, i16, i16), u8>;
 
@@ -54,7 +54,7 @@ impl World {
             })
             .collect();
 
-        let chunk_side: i32 = 255;
+        let chunk_side: i32 = 256;
 
         for ((x, y, z), material) in self.voxels {
             let wx = x as i32 + self.world_offset[0];
