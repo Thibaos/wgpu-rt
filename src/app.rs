@@ -292,13 +292,11 @@ impl App {
                 ..Default::default()
             });
 
-        let vert_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rasterize_aabbs_vert"),
-            source: spirv_from_bytes(include_bytes!("../assets/shaders/chunk.vert.spv")),
-        });
-        let frag_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("rasterize_aabbs_frag"),
-            source: spirv_from_bytes(include_bytes!("../assets/shaders/chunk.frag.spv")),
+        let rasterize_aabbs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("rasterize_aabbs_shader"),
+            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
+                "../assets/shaders/chunk.wgsl"
+            ))),
         });
 
         let vertex_buffers = [
@@ -360,14 +358,14 @@ impl App {
                 label: Some("rasterize_aabbs_pipeline"),
                 layout: Some(&rasterize_aabbs_pipeline_layout),
                 vertex: wgpu::VertexState {
-                    module: &vert_shader,
-                    entry_point: Some("main"),
+                    module: &rasterize_aabbs_shader,
+                    entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
                     buffers: &vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
-                    module: &frag_shader,
-                    entry_point: Some("main"),
+                    module: &rasterize_aabbs_shader,
+                    entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(config.view_formats[0].into())],
                 }),
@@ -542,16 +540,4 @@ impl App {
     pub fn update_look_position(&mut self, delta: (f64, f64)) {
         self.player_controller.rotate(delta);
     }
-}
-
-/// Convert SPIR-V byte slice to a `ShaderSource`, trying zero-copy first.
-fn spirv_from_bytes(bytes: &[u8]) -> wgpu::ShaderSource<'_> {
-    if let Ok(words) = bytemuck::try_cast_slice::<u8, u32>(bytes) {
-        return wgpu::ShaderSource::SpirV(Cow::Borrowed(words));
-    }
-    let words: Vec<u32> = bytes
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
-    wgpu::ShaderSource::SpirV(Cow::Owned(words))
 }
