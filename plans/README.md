@@ -18,6 +18,7 @@ honor its STOP conditions, and update your row when done.
 | 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
 | 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
 | 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | DONE |
+| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -28,6 +29,8 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - 010 depends on 008 and 009 because it changes the same framework/app render path
   and the final smoke test should use the narrowed device feature request and
   non-panicking cursor handling.
+- 011 has no plan dependency: it builds directly on the phase-1 baseline commit
+  `0d72007` (HEAD at planning time).
 - 003 has no dependencies on other plans.
 
 ## Findings considered and rejected

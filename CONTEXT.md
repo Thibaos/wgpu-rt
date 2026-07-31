@@ -46,5 +46,8 @@ _Avoid_: Ray marcher, tracer
 One of the chunk texture's 9 progressively coarser levels (256→128→…→1), built
 by 2³ occupancy downsampling. Used by the DDA as hierarchical empty-space
 culling: a non-zero coarse cell means "occupied somewhere below," letting the
-tracer skip large empty regions before descending to a finer level.
+tracer skip large empty regions before descending to a finer level. Phase 2
+starts at mip 5 and descends one level at a time to mip 0 inside bounded parent
+cells; levels 5 through 1 provide occupancy only, while mip 0 provides the
+material and hit depth.
 _Avoid_: LOD, pyramid level

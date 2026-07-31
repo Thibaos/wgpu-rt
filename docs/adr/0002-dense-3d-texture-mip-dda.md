@@ -13,6 +13,27 @@ rasterizer's per-chunk visibility. The trade-off: every chunk costs a full
 256³ texture (memory and the power-of-two constraint) in exchange for a far
 simpler GPU data path and cheap hierarchical skipping.
 
+## Phase-2 traversal contract
+
+Phase 2 extends the verified mip-5 DDA into a bounded hierarchical traversal.
+The shader starts at mip 5 (8³ cells), then descends one level at a time through
+mip 0 whenever a coarse occupancy cell is non-zero. Each refinement traverses a
+local 2³ child grid bounded by the occupied parent cell. A fixed six-frame stack
+preserves front-to-back sibling traversal: the parent is advanced before a child
+is pushed, and a failed child branch pops back to the already-advanced parent.
+
+Mips 5 through 1 are occupancy-only; mip 0 supplies the material, voxel entry
+time, and depth. The traversal uses half-open intervals, direction-aware
+negative-boundary correction, multi-axis tie advancement within `T_EPS = 1e-6`
+metres, a 24-cell root cap, an 8-cell refinement cap, and a global 2048-cell
+safety budget. All loops remain statically bounded for WGSL. Coarse `u8` mip
+values and the existing `R8Uint` upload path are retained for possible future
+LOD sampling, even though only their non-zero occupancy is used by traversal.
+
+A test-only CPU reference with sparse explicit mip maps and an independent mip-0
+DDA oracle covers descent, sibling recovery, boundary/tie behavior, and malformed
+coarse occupancy. Cross-chunk occlusion remains deferred.
+
 ## Status
 
 Accepted. Supersedes the GPU-rendering half of ADR-0001; ADR-0001's
