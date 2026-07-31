@@ -452,12 +452,13 @@ Run all repository gates, then two smoke runs:
   empty-slice floor).
 - These tests need no GPU: `cargo test --bin wgpu-rt orbit` runs them
   headlessly.
-- Existing tests (`tests/shader_validate.rs`, and the chunk mip tests inline
-  in `src/world/chunk.rs`) must continue to pass through the full `cargo test`
-  gate — the orbit change must not touch them. (Note: `tests/hierarchical_mip_dda.rs`
-  referenced by plan 011 does NOT exist in the tree — plan 011's README row
-  says DONE but that file was never committed. Do not create it as part of
-  this plan.)
+- Existing tests (`tests/shader_validate.rs`, `tests/hierarchical_mip_dda.rs`,
+  and the chunk mip tests inline in `src/world/chunk.rs`) must continue to pass
+  through the full `cargo test` gate — the orbit change must not touch them.
+  (Refresh 2026-07-31: `tests/hierarchical_mip_dda.rs` was committed in
+  `cc56462` after this plan was written — plan 011 is genuinely DONE. The
+  drift check above still passes; `src/player_controller.rs`, `src/app.rs`, and
+  `src/framework.rs` are unchanged since `3dcfe40`.)
 
 ## Done criteria
 

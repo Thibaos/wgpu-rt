@@ -18,9 +18,9 @@ honor its STOP conditions, and update your row when done.
 | 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
 | 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
 | 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | DONE |
-| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | DONE (verified 2026-07-31: reference test found uncommitted in worktree `wgpu-rt-exec-011`, all gates green) |
-| 012  | Debug orbit camera for reliable scene coverage | P1 | S | — | TODO |
-| 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | REJECTED — deliverable already existed uncommitted in the plan-011 worktree `wgpu-rt-exec-011`; verified passing all gates, no new work needed |
+| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | DONE (verified 2026-07-31 at `b0f332c`: shader in `68a1481`, reference test committed in `cc56462`; 12/12 reference tests pass, full suite 22/22, fmt/clippy clean) |
+| 012  | Debug orbit camera for reliable scene coverage | P1 | S | — | DONE (executed 2026-07-31 in worktree `wgpu-rt-exec-012` branch `exec-012`; reviewer re-ran all gates: orbit tests 5/5, full suite 27/27, fmt/clippy clean, orbit smoke verified target=(41.6,16.0,28.8) radius=82.7m az advancing 6°/s, default run unchanged; diff uncommitted — merge is user's call) |
+| 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | REJECTED — deliverable already existed uncommitted in the plan-011 worktree `wgpu-rt-exec-011`; verified passing all gates, then committed in `cc56462`. No new work needed. |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -36,11 +36,13 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 - 012 has no plan dependency; it builds on the plan-011 HEAD `3dcfe40`. It adds a
   deterministic, input-free debug orbit camera (off by default; `WGPU_RT_ORBIT=1`
   or `F2`) so smoke/perf runs cover the whole scene instead of the default view.
-- 013 depends on plan 011's phase-2 shader being committed (it writes the missing
-  CPU reference/oracle test file; the full `cargo test` gate exercises both).
+- 013 (superseded, rejected) originally depended on plan 011's phase-2 shader
+  being committed; its deliverable — the CPU reference/oracle test file — was
+  found complete and uncommitted in the plan-011 worktree and later committed
+  in `cc56462`, so the plan was rejected as redundant.
 - 003 has no dependencies on other plans.
 
-## Reconcile notes (2026-07-31)
+## Reconcile notes (2026-07-31, second pass)
 
 - 001–010 verified DONE on HEAD `3dcfe40` (cheap spot-checks: resize handler in
   `app.rs`, acquire retry/outdated handling in `framework.rs`, narrowed feature
@@ -52,19 +54,35 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   work is uncommitted (`M assets/shaders/chunk.wgsl`). Status corrected to
   IN PROGRESS (stale). Fix: commit the shader work, then write the reference test
   (or spin plan 013 for it).
-- RESOLVED 2026-07-31 (execute 013): the shader was committed in `68a1481`. The
-  missing reference test was found uncommitted in the surviving plan-011 worktree
-  `wgpu-rt-exec-011` (the executor had done the work but never committed). Reviewed:
-  12/12 named tests pass, oracle is an independent inline DDA (shares only the
-  top-level `ray_aabb` slab helper, not the per-cell advance), `Full` fixture used
-  only by its one test, hand-verified expected values. Full gates green in the
-  worktree: 22 tests, `fmt`, `clippy`. `smoke.png` evidence exists (executor-side
-  manual smoke gate; not visually re-confirmed). Awaiting user to copy the test
-  file into the main tree and commit; then 011 is fully done and the worktree can
-  be removed. 013 rejected as redundant.
-- 012 is TODO and drift-clean (HEAD == planned SHA `3dcfe40`; `src/app.rs`,
-  `src/player_controller.rs`, `src/render/mod.rs` excerpts still match). Executable
-  immediately — ideally after plan 011's changes are committed.
+- RESOLVED (same day): the shader was committed in `68a1481`. The missing
+  reference test was found uncommitted in the surviving plan-011 worktree
+  `wgpu-rt-exec-011` (the executor had done the work but never committed), reviewed
+  and green, then committed by the user in `cc56462`. 013 rejected as redundant.
+- **011 fully verified on HEAD `b0f332c` this pass**: `cargo test` → 22/22 (9 unit +
+  12 `hierarchical_mip_dda` + 1 `shader_validate`), `cargo fmt --check` clean,
+  `cargo clippy --all-targets -- -D warnings` clean. The "awaiting copy into main
+  tree" item is closed; worktree `wgpu-rt-exec-011` no longer exists (removed).
+- **012 drift re-checked at `b0f332c`**: `git diff --stat 3dcfe40..HEAD --
+  src/player_controller.rs src/app.rs src/framework.rs` → empty. In-scope excerpts
+  still match. One stale note refreshed in the plan file itself (the Test-plan
+  section claimed `tests/hierarchical_mip_dda.rs` does not exist — it now does, and
+  plan 011 is genuinely DONE). Executable immediately.
+- **Findings sweep**: #7 (unused VoxelRT shaders) RESOLVED — `assets/shaders/` now
+  contains only `chunk.wgsl` (unused files removed in `f1145be`). #8 (fragile
+  build.rs string replace) RESOLVED — no `build.rs` in the tree; the shader loads
+  via `include_str!("../assets/shaders/chunk.wgsl")` at `src/app.rs:298`. #3
+  refreshed (no longer "zero coverage") — 22 tests across 3 targets plus inline
+  unit tests in `src/world/chunk.rs`; the player controller, framework, loader, and
+  render path remain untested (plan 012 adds orbit-math tests only). #4 (tree64
+  unpinned, `Cargo.toml:15`) and #5 (no CI) and #6 (no README) still open.
+
+## Execute notes (2026-07-31, plan 012)
+
+- 012 executed in an isolated worktree `wgpu-rt-exec-012` (branch `exec-012`, HEAD `b0f332c`; created manually because the main tree held uncommitted plans/ files that block the tool's worktree isolation). Diff is uncommitted in the worktree — user merges. Reviewer verified independently: `cargo test --bin wgpu-rt orbit` 5/5; `cargo test` 27/27 (14 unit + 12 mip DDA + 1 shader validate); `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` clean; orbit smoke log shows startup target `(41.6,16.0,28.8)` radius `82.7m` chunks 5, 1 Hz pose log, azimuth advancing 6°/s, elevation tracking the 5..55° cos sweep, no shader/pipeline error; default run has zero orbit lines. Executor's documented deviations (all benign): `f32::abs_diff` replaced by `.abs()` epsilon (older toolchain), empty-slice floor asserted with epsilon to dodge `clippy::float_cmp`, one `cargo fmt` pass, gitignored `assets/models/bistro_sm.vox` copied into the worktree so smoke runs could load the scene. F2 keystroke delivery to the GUI window was flaky from bash (SendKeys + AppActivate retry succeeded; disable confirmed via log + FPS jump 18→82, re-enable confirmed with orbit restart at t=0).
+
+## Reconcile notes (2026-07-31, original)
+
+- See the first-pass notes above for the 011 correction and 013 rejection.
 
 ## Findings considered and rejected
 
@@ -81,12 +99,14 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 | # | Finding | Category | Priority |
 |---|---------|----------|----------|
-| 3  | Zero test coverage | Tests | P2 |
-| 4  | `tree64` git dep unpinned | Dependencies | P2 |
+| 3  | Thin test coverage: player controller, framework, loader, render path untested (22 tests exist; see reconcile notes) | Tests | P2 |
+| 4  | `tree64` git dep unpinned (`Cargo.toml:15`, no `rev`) | Dependencies | P2 |
 | 5  | No CI, no fmt/clippy in automation | DX | P2 |
 | 6  | No README | Docs | P3 |
-| 7  | Unused VoxelRT shader files | Tech Debt | P3 |
-| 8  | Fragile string replace in build.rs | Tech Debt | P3 |
+
+Resolved since the last pass: #7 (unused shader files — `assets/shaders/` holds only
+`chunk.wgsl`), #8 (build.rs — gone; shader loaded via `include_str!` at
+`src/app.rs:298`).
 
 ## Additional plan notes
 
