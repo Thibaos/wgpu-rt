@@ -18,9 +18,9 @@ honor its STOP conditions, and update your row when done.
 | 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
 | 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
 | 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | DONE |
-| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | IN PROGRESS (stale) — shader rewrite done but uncommitted; `tests/hierarchical_mip_dda.rs` reference test never created |
+| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | DONE (verified 2026-07-31: reference test found uncommitted in worktree `wgpu-rt-exec-011`, all gates green) |
 | 012  | Debug orbit camera for reliable scene coverage | P1 | S | — | TODO |
-| 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | TODO |
+| 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | REJECTED — deliverable already existed uncommitted in the plan-011 worktree `wgpu-rt-exec-011`; verified passing all gates, no new work needed |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -52,6 +52,16 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   work is uncommitted (`M assets/shaders/chunk.wgsl`). Status corrected to
   IN PROGRESS (stale). Fix: commit the shader work, then write the reference test
   (or spin plan 013 for it).
+- RESOLVED 2026-07-31 (execute 013): the shader was committed in `68a1481`. The
+  missing reference test was found uncommitted in the surviving plan-011 worktree
+  `wgpu-rt-exec-011` (the executor had done the work but never committed). Reviewed:
+  12/12 named tests pass, oracle is an independent inline DDA (shares only the
+  top-level `ray_aabb` slab helper, not the per-cell advance), `Full` fixture used
+  only by its one test, hand-verified expected values. Full gates green in the
+  worktree: 22 tests, `fmt`, `clippy`. `smoke.png` evidence exists (executor-side
+  manual smoke gate; not visually re-confirmed). Awaiting user to copy the test
+  file into the main tree and commit; then 011 is fully done and the worktree can
+  be removed. 013 rejected as redundant.
 - 012 is TODO and drift-clean (HEAD == planned SHA `3dcfe40`; `src/app.rs`,
   `src/player_controller.rs`, `src/render/mod.rs` excerpts still match). Executable
   immediately — ideally after plan 011's changes are committed.
