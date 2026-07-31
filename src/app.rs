@@ -45,6 +45,13 @@ pub struct App {
 
     // Display traversal cost instead of voxel colors.
     heatmap: bool,
+
+    // Debug orbit camera (plan 012)
+    orbit_enabled: bool,
+    orbit_elapsed: Duration,
+    orbit_target: glam::Vec3, // app.rs does not import glam types; use the fully-qualified path
+    orbit_radius: f32,
+    last_orbit_log_secs: u64,
 }
 
 fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
@@ -172,6 +179,37 @@ impl App {
             texture_count_final,
             instances.len(),
         );
+
+        let orbit_enabled = std::env::var("WGPU_RT_ORBIT")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let (orbit_target, orbit_radius) = if orbit_enabled {
+            if instances.is_empty() {
+                log::info!("Orbit camera: no chunks; falling back to target (0,0,0) radius 64.0");
+                (glam::Vec3::ZERO, chunk_side_world * 2.0)
+            } else {
+                let origins: Vec<glam::Vec3> = instances.iter().map(|i| i.position).collect();
+                let target = origins.iter().fold(glam::Vec3::ZERO, |a, o| a + *o)
+                    / origins.len() as f32
+                    + glam::Vec3::splat(chunk_side_world * 0.5);
+                let radius = crate::player_controller::orbit_radius_from_chunks(
+                    &origins,
+                    chunk_side_world,
+                    1.3,
+                );
+                log::info!(
+                    "Orbit camera: target=({:.1},{:.1},{:.1}) radius={:.1}m chunks={} (azimuth 60s, elevation 5..55 deg)",
+                    target.x,
+                    target.y,
+                    target.z,
+                    radius,
+                    origins.len(),
+                );
+                (target, radius)
+            }
+        } else {
+            (glam::Vec3::ZERO, chunk_side_world)
+        };
 
         let palette_buf = create_palette_buffer(device, &palette);
 
@@ -412,6 +450,12 @@ impl App {
             depth_texture,
 
             heatmap: false,
+
+            orbit_enabled,
+            orbit_target,
+            orbit_radius,
+            orbit_elapsed: Duration::ZERO,
+            last_orbit_log_secs: 0,
         }
     }
 
@@ -444,7 +488,38 @@ impl App {
     ) {
         self.update_delta_time();
 
-        self.player_controller.fly_movement(self.delta_time, keys);
+        let (view_mat, camera_pos) = if self.orbit_enabled {
+            self.orbit_elapsed += self.delta_time;
+            let orbit_params = crate::player_controller::DEFAULT_ORBIT_PARAMS;
+            let (pos, target) = crate::player_controller::orbit_pose(
+                self.orbit_elapsed.as_secs_f32(),
+                self.orbit_target,
+                self.orbit_radius,
+                &orbit_params,
+            );
+            let view_mat = glam::camera::rh::view::look_at_mat4(pos, target, glam::Vec3::Y);
+            let secs = self.orbit_elapsed.as_secs();
+            if secs != self.last_orbit_log_secs {
+                self.last_orbit_log_secs = secs;
+                log::info!(
+                    "Orbit: t={:.1}s az={:.1} deg elev={:.1} deg pos=({:.1},{:.1},{:.1})",
+                    secs,
+                    (std::f32::consts::TAU * secs as f32 / orbit_params.az_period)
+                        .to_degrees()
+                        .rem_euclid(360.0),
+                    ((pos.y - target.y) / self.orbit_radius).asin().to_degrees(),
+                    pos.x,
+                    pos.y,
+                    pos.z,
+                );
+            }
+            (view_mat, pos)
+        } else {
+            self.player_controller.fly_movement(self.delta_time, keys);
+            let view_mat = self.player_controller.view();
+            let camera_pos = self.player_controller.camera_position();
+            (view_mat, camera_pos)
+        };
 
         let aspect = self.surface_width as f32 / self.surface_height as f32;
 
@@ -454,12 +529,10 @@ impl App {
             0.1,
             10000.0,
         );
-        let view_mat = self.player_controller.view();
 
         let view_proj = proj_mat * view_mat;
         let view_inv = view_mat.inverse();
         let proj_inv = proj_mat.inverse();
-        let camera_pos = self.player_controller.camera_position();
 
         let camera_uniforms = CameraUniforms {
             camera_pos: [camera_pos.x, camera_pos.y, camera_pos.z, 0.0],
@@ -537,7 +610,27 @@ impl App {
         );
     }
 
+    pub fn toggle_orbit_camera(&mut self) {
+        self.orbit_enabled = !self.orbit_enabled;
+        if self.orbit_enabled {
+            self.orbit_elapsed = Duration::ZERO;
+            self.last_orbit_log_secs = 0;
+            log::info!(
+                "Orbit camera enabled: target=({:.1},{:.1},{:.1}) radius={:.1}m",
+                self.orbit_target.x,
+                self.orbit_target.y,
+                self.orbit_target.z,
+                self.orbit_radius,
+            );
+        } else {
+            log::info!("Orbit camera disabled");
+        }
+    }
+
     pub fn update_look_position(&mut self, delta: (f64, f64)) {
+        if self.orbit_enabled {
+            return;
+        }
         self.player_controller.rotate(delta);
     }
 }

@@ -330,6 +330,11 @@ impl ApplicationHandler for Framework {
                 {
                     app.toggle_heatmap();
                 }
+
+                if physical_key == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F2)
+                {
+                    app.toggle_orbit_camera();
+                }
                 self.pressed_keys.insert(logical_key);
             }
             WindowEvent::KeyboardInput {

@@ -129,3 +129,162 @@ impl PlayerController {
         }
     }
 }
+
+// --- Debug orbit camera (plan 012) ---------------------------------------
+//
+// A deterministic, input-free camera for smoke/perf runs. The pose is a pure
+// function of elapsed time: same elapsed -> same pose. The orbit target and
+// radius are derived from the rendered chunk instances (world space), so the
+// sweep covers the actual geometry. This is a TEST camera, not gameplay.
+
+/// Orbit parameters. Angles in radians, periods in seconds.
+pub struct OrbitParams {
+    pub az_period: f32,   // seconds per full azimuth revolution (0..2*PI)
+    pub elev_min: f32,    // minimum elevation above the horizon
+    pub elev_max: f32,    // maximum elevation
+    pub elev_period: f32, // seconds per full elevation sweep (min -> max -> min)
+}
+
+/// Default orbit: one revolution per 60 s, elevation sweeping 5..55 degrees
+/// every 30 s. Chosen so rays hit geometry from grazing to steep angles.
+pub const DEFAULT_ORBIT_PARAMS: OrbitParams = OrbitParams {
+    az_period: 60.0,
+    elev_min: 5.0 * std::f32::consts::PI / 180.0,
+    elev_max: 55.0 * std::f32::consts::PI / 180.0,
+    elev_period: 30.0,
+};
+
+/// Returns `(position, look_target)` of the orbit camera at `elapsed`
+/// seconds. The elevation is a smooth `cos` sweep that never leaves
+/// `[elev_min, elev_max]`; the azimuth advances monotonically. The camera is
+/// always exactly `radius` from `target` and looks at it; up is +Y.
+pub fn orbit_pose(elapsed: f32, target: Vec3, radius: f32, params: &OrbitParams) -> (Vec3, Vec3) {
+    let azimuth = std::f32::consts::TAU * elapsed / params.az_period;
+    let elev = params.elev_min
+        + (params.elev_max - params.elev_min)
+            * 0.5
+            * (1.0 - (std::f32::consts::TAU * elapsed / params.elev_period).cos());
+    let (sin_e, cos_e) = elev.sin_cos();
+    let (sin_a, cos_a) = azimuth.sin_cos();
+    let pos = target + radius * Vec3::new(cos_e * cos_a, sin_e, cos_e * sin_a);
+    (pos, target)
+}
+
+/// Returns an orbit radius (metres) that frames every chunk: the distance from
+/// the chunk-centroid `target` to the farthest corner of any chunk AABB
+/// `[origin, origin + side]^3`, times `margin`, floored at `chunk_side_world`.
+/// `chunk_origins` are the world-space origins of the non-empty chunks.
+pub fn orbit_radius_from_chunks(chunk_origins: &[Vec3], chunk_side_world: f32, margin: f32) -> f32 {
+    let half = chunk_side_world * 0.5;
+    let target = chunk_origins.iter().fold(Vec3::ZERO, |acc, o| acc + *o)
+        / chunk_origins.len().max(1) as f32
+        + Vec3::splat(half);
+    let mut max_dist = 0.0f32;
+    for o in chunk_origins {
+        for x in [o.x, o.x + chunk_side_world] {
+            for y in [o.y, o.y + chunk_side_world] {
+                for z in [o.z, o.z + chunk_side_world] {
+                    max_dist = max_dist.max(Vec3::new(x, y, z).distance(target));
+                }
+            }
+        }
+    }
+    (max_dist * margin).max(chunk_side_world)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::PI;
+
+    #[test]
+    fn orbit_pose_is_deterministic() {
+        let params = DEFAULT_ORBIT_PARAMS;
+        let (pos_a, target_a) = orbit_pose(12.5, vec3(10.0, -5.0, 3.0), 50.0, &params);
+        let (pos_b, target_b) = orbit_pose(12.5, vec3(10.0, -5.0, 3.0), 50.0, &params);
+        assert_eq!(pos_a, pos_b);
+        assert_eq!(target_a, target_b);
+    }
+
+    #[test]
+    fn orbit_pose_is_antipodal_after_half_revolution() {
+        let params = OrbitParams {
+            az_period: 60.0,
+            elev_min: 30.0 * PI / 180.0,
+            elev_max: 30.0 * PI / 180.0,
+            elev_period: 30.0,
+        };
+        let target = vec3(10.0, -5.0, 3.0);
+        let radius = 50.0;
+        let (pos_a, _) = orbit_pose(7.5, target, radius, &params);
+        let (pos_b, _) = orbit_pose(7.5 + 30.0, target, radius, &params);
+        assert!(((pos_b.x - target.x) + (pos_a.x - target.x)).abs() < 1e-3);
+        assert!(((pos_b.z - target.z) + (pos_a.z - target.z)).abs() < 1e-3);
+        assert!((pos_b.y - pos_a.y).abs() < 1e-4);
+    }
+
+    #[test]
+    fn orbit_elevation_stays_within_bounds() {
+        let params = DEFAULT_ORBIT_PARAMS;
+        let target = vec3(10.0, -5.0, 3.0);
+        let radius = 50.0;
+        for step in 0..200 {
+            let elapsed = params.elev_period * 2.0 * step as f32 / 200.0;
+            let (pos, _) = orbit_pose(elapsed, target, radius, &params);
+            let elev = ((pos.y - target.y) / radius).asin();
+            assert!(
+                elev >= params.elev_min - 1e-4 && elev <= params.elev_max + 1e-4,
+                "elevation {} out of bounds at elapsed {}",
+                elev,
+                elapsed
+            );
+        }
+    }
+
+    #[test]
+    fn orbit_pose_distance_is_radius() {
+        let params = DEFAULT_ORBIT_PARAMS;
+        let target = vec3(10.0, -5.0, 3.0);
+        let radius = 50.0;
+        for step in 0..24 {
+            let elapsed = params.az_period * 2.0 * step as f32 / 24.0;
+            let (pos, _) = orbit_pose(elapsed, target, radius, &params);
+            assert!(
+                ((pos - target).length() - radius).abs() < 1e-4,
+                "distance {} != radius {} at elapsed {}",
+                (pos - target).length(),
+                radius,
+                elapsed
+            );
+        }
+    }
+
+    #[test]
+    fn orbit_radius_frames_all_chunks() {
+        let chunk_side_world = 32.0;
+        let margin = 1.3;
+        let origins = vec![
+            vec3(0.0, 0.0, 0.0),
+            vec3(64.0, 0.0, 64.0),
+            vec3(-96.0, 32.0, -48.0),
+        ];
+        let radius = orbit_radius_from_chunks(&origins, chunk_side_world, margin);
+        let half = chunk_side_world * 0.5;
+        let target = origins.iter().fold(Vec3::ZERO, |acc, o| acc + *o) / origins.len() as f32
+            + Vec3::splat(half);
+        let mut max_corner_dist = 0.0f32;
+        for o in &origins {
+            for x in [o.x, o.x + chunk_side_world] {
+                for y in [o.y, o.y + chunk_side_world] {
+                    for z in [o.z, o.z + chunk_side_world] {
+                        max_corner_dist = max_corner_dist.max(Vec3::new(x, y, z).distance(target));
+                    }
+                }
+            }
+        }
+        assert!(radius >= max_corner_dist);
+        assert!(radius >= chunk_side_world);
+        let empty = orbit_radius_from_chunks(&[], chunk_side_world, margin);
+        assert!((empty - chunk_side_world).abs() < 1e-6);
+    }
+}
