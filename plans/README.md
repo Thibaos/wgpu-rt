@@ -18,7 +18,9 @@ honor its STOP conditions, and update your row when done.
 | 008  | Stop requesting all experimental GPU features | P1 | S | — | DONE |
 | 009  | Handle cursor-grab errors instead of panicking | P2 | S | — | DONE |
 | 010  | Wire the loaded chunked world into the voxel renderer | P1 | L | 008, 009 | DONE |
-| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | TODO |
+| 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | IN PROGRESS (stale) — shader rewrite done but uncommitted; `tests/hierarchical_mip_dda.rs` reference test never created |
+| 012  | Debug orbit camera for reliable scene coverage | P1 | S | — | TODO |
+| 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | TODO |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -31,7 +33,28 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
   non-panicking cursor handling.
 - 011 has no plan dependency: it builds directly on the phase-1 baseline commit
   `0d72007` (HEAD at planning time).
+- 012 has no plan dependency; it builds on the plan-011 HEAD `3dcfe40`. It adds a
+  deterministic, input-free debug orbit camera (off by default; `WGPU_RT_ORBIT=1`
+  or `F2`) so smoke/perf runs cover the whole scene instead of the default view.
+- 013 depends on plan 011's phase-2 shader being committed (it writes the missing
+  CPU reference/oracle test file; the full `cargo test` gate exercises both).
 - 003 has no dependencies on other plans.
+
+## Reconcile notes (2026-07-31)
+
+- 001–010 verified DONE on HEAD `3dcfe40` (cheap spot-checks: resize handler in
+  `app.rs`, acquire retry/outdated handling in `framework.rs`, narrowed feature
+  request, cursor-grab fallback, chunk instance wiring all present).
+- 011 was marked DONE prematurely: the phase-2 shader (`assets/shaders/chunk.wgsl`,
+  six-frame stack, mip-0-only material) passes `shader_validate`/`fmt`/`clippy`, but
+  the pure-Rust reference test `tests/hierarchical_mip_dda.rs` was never written —
+  `cargo test --test hierarchical_mip_dda` fails with "no test target". All plan-011
+  work is uncommitted (`M assets/shaders/chunk.wgsl`). Status corrected to
+  IN PROGRESS (stale). Fix: commit the shader work, then write the reference test
+  (or spin plan 013 for it).
+- 012 is TODO and drift-clean (HEAD == planned SHA `3dcfe40`; `src/app.rs`,
+  `src/player_controller.rs`, `src/render/mod.rs` excerpts still match). Executable
+  immediately — ideally after plan 011's changes are committed.
 
 ## Findings considered and rejected
 
