@@ -1,5 +1,7 @@
 enable wgpu_binding_array;
 
+// %%STATS_DECLS%%
+
 struct CameraUniforms {
     camera_pos: vec4<f32>,
     view_inv: mat4x4<f32>,
@@ -33,6 +35,11 @@ struct VertexOutput {
 @group(1) @binding(0) var<storage, read> palette: array<vec4<f32>>;
 @group(1) @binding(1) var voxel_textures: binding_array<texture_3d<u32>>;
 
+// Writes the real per-voxel hit depth via @builtin(frag_depth). Note: a
+// frag_depth write forces the depth test to run LATE (after the fragment
+// shader), so hardware early-Z never engages on this pass — that trade-off
+// is accepted so the depth buffer holds true surface depths (needed by any
+// downstream depth consumer).
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
@@ -253,6 +260,7 @@ fn advance_frame(frame: TraversalFrame) -> TraversalFrame {
 
 @fragment
 fn fs_main(in: VertexOutput) -> FragmentOutput {
+    // %%STATS_FRAGMENT%%
     let chunk_origin = in.chunk_origin;
     let bmin = chunk_origin;
     let bmax = chunk_origin + vec3<f32>(CHUNK_WORLD_SIZE);
@@ -318,6 +326,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
 
         // Positive-width sample.
         processed_cells = processed_cells + 1;
+        // %%STATS_CELLS%%
         if (processed_cells > GLOBAL_CELL_CAP) {
             discard;
         }
@@ -332,6 +341,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
             if (mat != 0u) {
                 let hit_world = origin + dir * top.t;
                 let clip = camera.view_proj * vec4<f32>(hit_world, 1.0);
+                // %%STATS_HIT%%
                 return FragmentOutput(palette[mat], clip.z / clip.w);
             }
             frames[top_idx] = advance_frame(top);

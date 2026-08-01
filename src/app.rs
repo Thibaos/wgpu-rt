@@ -46,6 +46,21 @@ pub struct App {
     // Display traversal cost instead of voxel colors.
     heatmap: bool,
 
+    // GPU-side profiling. WGPU_RT_PROFILE=1 enables per-frame timestamp
+    // queries for the chunk pass; WGPU_RT_STATS=1 additionally compiles the
+    // shader with atomic DDA-work counters. Results are read back with a
+    // blocking Wait poll, so profiling also caps the loop at GPU speed.
+    stats_buf: Option<wgpu::Buffer>,
+    stats_readback: Option<wgpu::Buffer>,
+    timestamp_query: Option<wgpu::QuerySet>,
+    timestamp_buf: Option<wgpu::Buffer>,
+    timestamp_readback: Option<wgpu::Buffer>,
+    timestamp_period: f32,
+    profile_enabled: bool,
+    stats_enabled: bool,
+    profile_accum: ProfileAccum,
+    profile_reported_at: Option<Instant>,
+
     // Debug orbit camera (plan 012)
     orbit_enabled: bool,
     orbit_elapsed: Duration,
@@ -71,6 +86,16 @@ fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu:
     })
 }
 
+/// Per-second accumulation of GPU-side profiling counters (see `read_profile`).
+#[derive(Default)]
+struct ProfileAccum {
+    frames: u32,
+    gpu_ms: f64,
+    fragments: u64,
+    cells: u64,
+    hits: u64,
+}
+
 impl App {
     pub const SRGB: bool = true;
 
@@ -80,7 +105,7 @@ impl App {
     }
 
     pub fn optional_features() -> wgpu::Features {
-        wgpu::Features::empty()
+        wgpu::Features::TIMESTAMP_QUERY
     }
 
     pub fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
@@ -103,9 +128,18 @@ impl App {
         let width = config.width;
         let height = config.height;
 
+        let profile_enabled = std::env::var("WGPU_RT_PROFILE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let stats_enabled = std::env::var("WGPU_RT_STATS")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+
         let player_controller = PlayerController::default();
 
-        let world = World::load("assets/models/bistro_sm.vox").expect("failed to load voxel world");
+        let world_path = std::env::var("WGPU_RT_WORLD")
+            .unwrap_or_else(|_| "assets/models/monu1.vox".to_string());
+        let world = World::load(&world_path).expect("failed to load voxel world");
 
         let voxel_count = world.voxels.len();
         log::info!(
@@ -244,11 +278,26 @@ impl App {
                     .map(Instance::to_raw)
                     .collect::<Vec<InstanceRaw>>(),
             ),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         let texture_view_refs: Vec<&wgpu::TextureView> = chunk_texture_views.iter().collect();
         let bind_group_count = NonZeroU32::new(texture_count_final as u32).unwrap();
+
+        // Per-frame DDA work counters. Only created/bound when WGPU_RT_STATS=1:
+        // the atomic storage writes are a fragment-shader side effect that
+        // would disable hardware early-Z, so the clean build must not carry
+        // them (see the %%STATS_*%% shader markers).
+        let stats_buf = stats_enabled.then(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("profile_stats_buf"),
+                size: 16,
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        });
 
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -267,33 +316,46 @@ impl App {
                 }],
             });
 
+        let mut resource_layout_entries: Vec<wgpu::BindGroupLayoutEntry> = vec![
+            // palette
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(256 * 4 * 4),
+                },
+                count: None,
+            },
+            // chunk textures
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Uint,
+                    view_dimension: wgpu::TextureViewDimension::D3,
+                    multisampled: false,
+                },
+                count: Some(bind_group_count),
+            },
+        ];
+        if stats_enabled {
+            resource_layout_entries.push(wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            });
+        }
         let resource_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("resource_bind_group_layout"),
-                entries: &[
-                    // palette
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(256 * 4 * 4),
-                        },
-                        count: None,
-                    },
-                    // chunk textures
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Uint,
-                            view_dimension: wgpu::TextureViewDimension::D3,
-                            multisampled: false,
-                        },
-                        count: Some(bind_group_count),
-                    },
-                ],
+                entries: &resource_layout_entries,
             });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -305,18 +367,25 @@ impl App {
             label: Some("camera_bind_group"),
         });
 
+        let mut resource_entries: Vec<wgpu::BindGroupEntry> = vec![
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: palette_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureViewArray(&texture_view_refs),
+            },
+        ];
+        if let Some(buf) = stats_buf.as_ref() {
+            resource_entries.push(wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buf.as_entire_binding(),
+            });
+        }
         let resource_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &resource_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: palette_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureViewArray(&texture_view_refs),
-                },
-            ],
+            entries: &resource_entries,
             label: Some("resource_bind_group"),
         });
 
@@ -330,11 +399,42 @@ impl App {
                 ..Default::default()
             });
 
+        // Compile the chunk shader. WGPU_RT_STATS=1 injects atomic DDA-work
+        // counters via the %%STATS_*%% markers; the default build keeps the
+        // fragment shader free of side effects so early-Z stays enabled.
+        let shader_source = include_str!("../assets/shaders/chunk.wgsl")
+            .replace("// %%STATS_DECLS%%", if stats_enabled {
+                "struct Stats {\n    fragments: atomic<u32>,\n    processed_cells: atomic<u32>,\n    hits: atomic<u32>,\n};\n@group(1) @binding(2) var<storage, read_write> stats: Stats;\n"
+            } else {
+                ""
+            })
+            .replace(
+                "// %%STATS_FRAGMENT%%",
+                if stats_enabled {
+                    "atomicAdd(&stats.fragments, 1u);"
+                } else {
+                    ""
+                },
+            )
+            .replace(
+                "// %%STATS_CELLS%%",
+                if stats_enabled {
+                    "atomicAdd(&stats.processed_cells, 1u);"
+                } else {
+                    ""
+                },
+            )
+            .replace(
+                "// %%STATS_HIT%%",
+                if stats_enabled {
+                    "atomicAdd(&stats.hits, 1u);"
+                } else {
+                    ""
+                },
+            );
         let rasterize_aabbs_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("rasterize_aabbs_shader"),
-            source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(include_str!(
-                "../assets/shaders/chunk.wgsl"
-            ))),
+            source: wgpu::ShaderSource::Wgsl(Cow::Owned(shader_source)),
         });
 
         let vertex_buffers = [
@@ -425,6 +525,49 @@ impl App {
 
         let depth_texture = create_depth_texture(device, width, height);
 
+        // Timestamp queries for the chunk pass GPU time (WGPU_RT_PROFILE=1).
+        let (timestamp_query, timestamp_buf, timestamp_readback, timestamp_period) =
+            if profile_enabled && device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+                let query = device.create_query_set(&wgpu::QuerySetDescriptor {
+                    label: Some("profile_timestamp_query"),
+                    ty: wgpu::QueryType::Timestamp,
+                    count: 2,
+                });
+                let ts_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("profile_timestamp_buf"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+                    mapped_at_creation: false,
+                });
+                let ts_readback = device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("profile_timestamp_readback"),
+                    size: 16,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                });
+                (
+                    Some(query),
+                    Some(ts_buf),
+                    Some(ts_readback),
+                    queue.get_timestamp_period(),
+                )
+            } else {
+                if profile_enabled {
+                    log::warn!(
+                        "TIMESTAMP_QUERY not supported on this adapter; GPU timing disabled"
+                    );
+                }
+                (None, None, None, 0.0)
+            };
+        let stats_readback = stats_enabled.then(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("profile_stats_readback"),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
+
         App {
             player_controller,
 
@@ -448,6 +591,17 @@ impl App {
             instance_buffer,
 
             depth_texture,
+
+            stats_buf,
+            stats_readback,
+            timestamp_query,
+            timestamp_buf,
+            timestamp_readback,
+            timestamp_period,
+            profile_enabled,
+            stats_enabled,
+            profile_accum: ProfileAccum::default(),
+            profile_reported_at: None,
 
             heatmap: false,
 
@@ -553,6 +707,37 @@ impl App {
             bytemuck::cast_slice(&[camera_uniforms]),
         );
 
+        // Front-to-back instance ordering. With the frag_depth write removed,
+        // the depth test runs before the fragment shader (hardware early-Z),
+        // but a chunk's fragments are only rejected once a NEARER chunk has
+        // already written depth for that pixel — so the culling benefit is
+        // entirely draw-order dependent. Sort by chunk center projected on the
+        // camera forward axis; chunk boxes tile the world exactly, so this
+        // yields near-to-far order along every view ray.
+        let half_chunk_world = CHUNK_TEXTURE_SIZE.width as f32 * VOXEL_SCALE * 0.5;
+        let fwd = (view_inv * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate();
+        let mut order: Vec<usize> = (0..self.instances.len()).collect();
+        order.sort_by(|&a, &b| {
+            let ka = (self.instances[a].position + glam::Vec3::splat(half_chunk_world)
+                - camera_pos)
+                .dot(fwd);
+            let kb = (self.instances[b].position + glam::Vec3::splat(half_chunk_world)
+                - camera_pos)
+                .dot(fwd);
+            ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let sorted_raws: Vec<InstanceRaw> =
+            order.iter().map(|&i| self.instances[i].to_raw()).collect();
+        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&sorted_raws));
+
+        if self.stats_enabled {
+            queue.write_buffer(
+                self.stats_buf.as_ref().unwrap(),
+                0,
+                bytemuck::cast_slice(&[0u32; 4]),
+            );
+        }
+
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
@@ -580,7 +765,13 @@ impl App {
                     }),
                     stencil_ops: None,
                 }),
-                timestamp_writes: None,
+                timestamp_writes: self.timestamp_query.as_ref().map(|query_set| {
+                    wgpu::RenderPassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(0),
+                        end_of_pass_write_index: Some(1),
+                    }
+                }),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -599,7 +790,97 @@ impl App {
             }
         }
 
+        if let (Some(ts_buf), Some(ts_readback)) = (
+            self.timestamp_buf.as_ref(),
+            self.timestamp_readback.as_ref(),
+        ) {
+            let query = self.timestamp_query.as_ref().unwrap();
+            encoder.resolve_query_set(query, 0..2, ts_buf, 0);
+            encoder.copy_buffer_to_buffer(ts_buf, 0, ts_readback, 0, 16);
+        }
+        if let (Some(stats_buf), Some(stats_readback)) =
+            (self.stats_buf.as_ref(), self.stats_readback.as_ref())
+        {
+            encoder.copy_buffer_to_buffer(stats_buf, 0, stats_readback, 0, 16);
+        }
+
         queue.submit(Some(encoder.finish()));
+
+        if self.profile_enabled {
+            self.read_profile(device);
+        }
+    }
+
+    /// Maps the per-frame readback buffers (blocking Wait poll — this is the
+    /// profiling loop being capped at GPU speed) and folds the results into
+    /// `profile_accum`, reporting once per second.
+    fn read_profile(&mut self, device: &wgpu::Device) {
+        let Some(ts_readback) = self.timestamp_readback.as_ref() else {
+            return;
+        };
+        ts_readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let stats_readback = self.stats_readback.as_ref();
+        if let Some(sr) = stats_readback {
+            sr.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        }
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+
+        {
+            let mapped = ts_readback.slice(..).get_mapped_range().unwrap();
+            let ts: &[u64] = bytemuck::cast_slice(&mapped);
+            let start = ts[0];
+            let end = ts[1];
+            if end >= start {
+                let period = self.timestamp_period.max(1.0);
+                self.profile_accum.gpu_ms += (end - start) as f64 * period as f64 / 1e6;
+            }
+            drop(mapped);
+            ts_readback.unmap();
+        }
+
+        if let Some(sr) = stats_readback {
+            let mapped = sr.slice(..).get_mapped_range().unwrap();
+            let s: &[u32] = bytemuck::cast_slice(&mapped);
+            self.profile_accum.fragments += s[0] as u64;
+            self.profile_accum.cells += s[1] as u64;
+            self.profile_accum.hits += s[2] as u64;
+            drop(mapped);
+            sr.unmap();
+        }
+
+        self.profile_accum.frames += 1;
+        let now = Instant::now();
+        if self
+            .profile_reported_at
+            .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(1))
+        {
+            self.report_profile();
+            self.profile_reported_at = Some(now);
+        }
+    }
+
+    fn report_profile(&mut self) {
+        let a = &self.profile_accum;
+        if a.frames == 0 {
+            return;
+        }
+        let pixels = (self.surface_width * self.surface_height) as f64;
+        let frags_per_frame = a.fragments as f64 / a.frames as f64;
+        let cells_per_frame = a.cells as f64 / a.frames as f64;
+        let gpu_ms = a.gpu_ms / a.frames as f64;
+        let hits_per_frame = a.hits as f64 / a.frames as f64;
+        log::info!(
+            "[profile] {} frames | gpu {:.2} ms | frags/frame {:>9.0} ({:.2}x px) | cells/frame {:>10.0} | cells/frag {:.1} | hits/frame {:>8.0} | {:>7.1} MB/frame texel traffic",
+            a.frames,
+            gpu_ms,
+            frags_per_frame,
+            frags_per_frame / pixels,
+            cells_per_frame,
+            a.cells as f64 / a.fragments.max(1) as f64,
+            hits_per_frame,
+            cells_per_frame * 4.0 / 1e6,
+        );
+        self.profile_accum = ProfileAccum::default();
     }
 
     pub fn toggle_heatmap(&mut self) {
