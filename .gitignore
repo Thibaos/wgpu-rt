@@ -6,3 +6,5 @@
 *.world
 imgui.ini
 *.spv
+*.rdc
+wgpu-rt-handoff-*.md
