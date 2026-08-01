@@ -90,18 +90,24 @@ const TRAVERSAL_BOUND: i32 = 16384;
 //   - tex_origin + cell is the texture coordinate of the current cell at mip;
 //   - t is that cell's raw ray-entry parameter;
 //   - interval.y is the exclusive region exit (half-open [interval.x, interval.y)).
+//
+// Deliberately minimal: grid_size, bounds_min, bounds_max, and axis_step are
+// NOT stored — they are derived on demand from (mip, tex_origin, chunk_origin,
+// dir). This is the plan-001 Optim B compaction (27 -> 17 scalar fields,
+// -37% registers). The six-frame stack was the dominant register pressure in
+// the fragment shader: Nsight showed warp-can't-launch-register-limited at
+// 53.4% with SM issue throughput at 3.7%, i.e. the DDA's dependent
+// textureLoad latency chain could not be hidden because too few warps were
+// resident. Fewer registers per frame -> more resident warps -> more latency
+// hiding, at the cost of a little ALU (selects/shifts) per frame.
 struct TraversalFrame {
     mip: u32,
-    grid_size: i32,
     tex_origin: vec3<i32>,
-    bounds_min: vec3<f32>,
-    bounds_max: vec3<f32>,
     interval: vec2<f32>,
     cell: vec3<i32>,
     t: f32,
     t_max: vec3<f32>,
     t_delta: vec3<f32>,
-    axis_step: vec3<i32>,
     steps_taken: i32,
 };
 
@@ -165,6 +171,18 @@ fn ray_aabb(origin: vec3<f32>, dir: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>)
     return vec2<f32>(max(t_enter, 0.0), t_exit);
 }
 
+// Cell side length (metres) at a given mip: mip m has 256 >> m cells per axis
+// spanning the 32 m chunk.
+fn cell_size_at_mip(mip: u32) -> vec3<f32> {
+    return vec3<f32>(CHUNK_WORLD_SIZE / f32(256u >> mip));
+}
+
+// Grid cells per axis for a frame at `mip`: the root frame walks the 8^3 root
+// grid (ROOT_MIP); every pushed child is a 2^3 refinement of the parent cell.
+fn grid_size_at_mip(mip: u32) -> i32 {
+    return select(2, ROOT_GRID_SIZE, mip == ROOT_MIP);
+}
+
 // Builds a traversal frame whose first sample uses `interval.x` (the interval
 // entry parameter), never min(t_max) (which is the cell exit).
 //
@@ -179,33 +197,36 @@ fn ray_aabb(origin: vec3<f32>, dir: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>)
 // CHUNK_WORLD_SIZE / grid_size (wrong for child frames: a mip-4 child of a
 // root cell is 2 m, not 16 m). t_max is an absolute ray parameter to the next
 // boundary on that axis; the raw/unmodified value is preserved.
+//
+// grid_size and the world bounds are not stored in the frame: they are derived
+// from (mip, tex_origin, chunk_origin) on demand. tex_origin is always aligned
+// to the mip cell grid, so bounds_min = chunk_origin + tex_origin * cell_size
+// and bounds_max = bounds_min + grid_size * cell_size hold for both the root
+// frame (mip 5, tex_origin 0 -> the full chunk AABB) and every child frame.
 fn init_frame(
     origin: vec3<f32>,
     dir: vec3<f32>,
+    chunk_origin: vec3<f32>,
     mip: u32,
-    grid_size: i32,
     tex_origin: vec3<i32>,
-    bounds_min: vec3<f32>,
-    bounds_max: vec3<f32>,
     interval: vec2<f32>,
 ) -> TraversalFrame {
     var frame: TraversalFrame;
     frame.mip = mip;
-    frame.grid_size = grid_size;
     frame.tex_origin = tex_origin;
-    frame.bounds_min = bounds_min;
-    frame.bounds_max = bounds_max;
     frame.interval = interval;
     frame.steps_taken = 0;
 
-    let cell_size = (bounds_max - bounds_min) / vec3<f32>(f32(grid_size));
+    let grid_size = grid_size_at_mip(mip);
+    let cell_size = cell_size_at_mip(mip);
+    let bounds_min = chunk_origin + vec3<f32>(tex_origin) * cell_size;
+    let bounds_max = bounds_min + cell_size * vec3<f32>(f32(grid_size));
     let entry = origin + dir * interval.x;
     let local = (entry - bounds_min) / cell_size;
 
     var cell = vec3<i32>(0);
     var t_max = vec3<f32>(INF);
     var t_delta = vec3<f32>(INF);
-    var axis_step = vec3<i32>(0);
 
     for (var i: i32 = 0; i < 3; i = i + 1) {
         var c = i32(floor(local[i]));
@@ -219,9 +240,7 @@ fn init_frame(
         if (abs(dir[i]) < PARALLEL_EPS) {
             t_max[i] = INF;
             t_delta[i] = INF;
-            axis_step[i] = 0;
         } else {
-            axis_step[i] = select(-1, 1, dir[i] > 0.0);
             t_delta[i] = cell_size[i] / abs(dir[i]);
             // Absolute ray parameter of the next boundary on this axis.
             let boundary = select(
@@ -237,21 +256,21 @@ fn init_frame(
     frame.t = interval.x;
     frame.t_max = t_max;
     frame.t_delta = t_delta;
-    frame.axis_step = axis_step;
     return frame;
 }
 
 // Advances the frame to the raw minimum of the three t_max values, then
 // advances EVERY axis whose boundary is within T_EPS of that minimum
-// (all-axis tie behavior for edge/corner ties). Parallel axes (step 0,
-// t_max = INF) are never advanced by this rule.
-fn advance_frame(frame: TraversalFrame) -> TraversalFrame {
+// (all-axis tie behavior for edge/corner ties). Parallel axes (t_max = INF,
+// t_delta = INF) never satisfy the guard and are never advanced; their step
+// direction is derived from the ray direction rather than stored.
+fn advance_frame(frame: TraversalFrame, dir: vec3<f32>) -> TraversalFrame {
     var f = frame;
     let min_t = min(min(f.t_max.x, f.t_max.y), f.t_max.z);
     f.t = min_t;
     for (var i: i32 = 0; i < 3; i = i + 1) {
         if (f.t_max[i] - min_t <= T_EPS) {
-            f.cell[i] = f.cell[i] + f.axis_step[i];
+            f.cell[i] = f.cell[i] + select(-1, 1, dir[i] > 0.0);
             f.t_max[i] = f.t_max[i] + f.t_delta[i];
         }
     }
@@ -288,7 +307,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
     var processed_cells: i32 = 0;
 
     // Root frame: mip 5, grid 8, tex_origin (0,0,0), chunk AABB, analytic span.
-    frames[0] = init_frame(origin, dir, ROOT_MIP, ROOT_GRID_SIZE, vec3<i32>(0), bmin, bmax, span);
+    frames[0] = init_frame(origin, dir, chunk_origin, ROOT_MIP, vec3<i32>(0), span);
     stack_len = 1;
 
     for (var iter: i32 = 0; iter < TRAVERSAL_BOUND; iter = iter + 1) {
@@ -320,7 +339,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
             // Zero-width interval: do not sample it; advance (the loop top
             // pops when the advance reaches the exclusive exit). Zero-width
             // intervals consume neither the per-frame nor the global budget.
-            frames[top_idx] = advance_frame(top);
+            frames[top_idx] = advance_frame(top, dir);
             continue;
         }
 
@@ -344,7 +363,7 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
                 // %%STATS_HIT%%
                 return FragmentOutput(palette[mat], clip.z / clip.w);
             }
-            frames[top_idx] = advance_frame(top);
+            frames[top_idx] = advance_frame(top, dir);
             continue;
         }
 
@@ -352,19 +371,18 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
             // Coarse occupancy only: capture the parent cell before advancing,
             // advance the parent (front-to-back sibling order), then push the
             // bounded 2^3 child with the exact texture-origin mapping
-            // child_tex_origin = 2 * (parent.tex_origin + parent.cell).
+            // child_tex_origin = 2 * (parent.tex_origin + parent.cell). The
+            // child's world bounds are re-derived inside init_frame from
+            // (child_mip, child_tex_origin, chunk_origin).
             let parent_entry = top.t;
             let parent_next = next_boundary;
             let child_exit = min(parent_next, top.interval.y);
-            let cell_size = (top.bounds_max - top.bounds_min) / vec3<f32>(f32(top.grid_size));
-            let cell_bmin = top.bounds_min + vec3<f32>(top.cell) * cell_size;
-            let cell_bmax = cell_bmin + cell_size;
             let child_tex_origin = 2 * (top.tex_origin + top.cell);
             let child_mip = top.mip - 1u;
 
             // Advance the parent before pushing the child so a child miss or
             // cap exhaustion resumes the saved parent state.
-            frames[top_idx] = advance_frame(top);
+            frames[top_idx] = advance_frame(top, dir);
 
             // A full stack treats the branch as unresolvable and continues
             // the already-advanced parent rather than writing a coarse hit.
@@ -372,17 +390,15 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
                 frames[stack_len] = init_frame(
                     origin,
                     dir,
+                    chunk_origin,
                     child_mip,
-                    2,
                     child_tex_origin,
-                    cell_bmin,
-                    cell_bmax,
                     vec2<f32>(parent_entry, child_exit),
                 );
                 stack_len = stack_len + 1;
             }
         } else {
-            frames[top_idx] = advance_frame(top);
+            frames[top_idx] = advance_frame(top, dir);
         }
     }
 
