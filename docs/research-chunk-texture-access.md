@@ -10,7 +10,7 @@ A vertex attribute cannot contain a texture or texture view. It can contain a **
 
 The fragment shader cannot take a texture handle from a vertex output, and WebGPU v1 does not provide an array of independent 3D textures through `texture_3d_array`. A `texture_2d_array` is an array of 2D layers, not an array of 3D volumes.
 
-For this project specifically, the existing Tree64 design is likely a better representation than dense per-chunk textures for a large sparse world. A dense 3D texture is attractive for simple DDA, but it pays storage and bandwidth proportional to the chunk volume, not occupied voxels. A storage-buffer chunk pool or Tree64 pool preserves sparse storage while still allowing one draw/dispatch.
+For this project specifically, a sparse representation is likely better than dense per-chunk textures for a large sparse world. A dense 3D texture is attractive for simple DDA, but it pays storage and bandwidth proportional to the chunk volume, not occupied voxels. A storage-buffer chunk pool preserves sparse storage while still allowing one draw/dispatch.
 
 ## Passing the chunk identity from the AABB draw
 
@@ -212,8 +212,8 @@ This gives a portable baseline and makes the chunk metadata path explicit.
 
 Prefer a two-level sparse traversal:
 
-- A world-level chunk occupancy structure (the existing Tree64 approach is a strong candidate) finds candidate chunks along the ray.
-- Each chunk uses a compact Tree64 or a dense representation only if its occupancy justifies it.
+- A world-level chunk occupancy structure finds candidate chunks along the ray.
+- Each chunk uses a compact or dense representation only if its occupancy justifies it.
 - A compute shader casts one ray per output pixel and performs nearest-hit selection across chunks.
 
 If a dense texture is required for simplicity, use either:

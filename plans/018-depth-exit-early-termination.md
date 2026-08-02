@@ -1,11 +1,13 @@
-# Plan 003: Depth-exit — terminate the chunk DDA at the previous frame's nearest surface
+# Plan 018: Depth-exit — terminate the chunk DDA at the previous frame's nearest surface
+
+> **History (2026-08-02)**: moved from `advisor-plans/003-depth-exit-early-termination.md` (improve-skill advisor batch, 2026-07-31) into the main plan index as plan 018. Terminal — see `plans/README.md` row 018.
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
 > report — do not improvise. Save safety copies before editing
 > (`cp` the three files to `/tmp/`), keep the diff uncommitted for review, and
-> do NOT touch `plans/README.md` or `advisor-plans/README.md`.
+> do NOT touch `plans/README.md`.
 >
 > **Drift check (run first)**:
 > `git diff --stat 1817d7d..HEAD -- assets/shaders/chunk.wgsl src/app.rs src/render/mod.rs src/framework.rs`
@@ -143,7 +145,7 @@ editing.
   comment style in `chunk.wgsl`.
 - **Vocabulary** (CONTEXT.md): "DDA", "Mip level", "Chunk", "Voxel Scale".
 - **Git workflow**: leave the implementation diff uncommitted for review.
-  Do not commit; do not touch `plans/README.md` or `advisor-plans/README.md`.
+  Do not commit; do not touch `plans/README.md`.
 
 ## Commands you will need
 
@@ -173,7 +175,7 @@ frames). Table: monu1 baseline ≈ 10 ms → 7000; bistro baseline ≈ 58 ms →
 1200; after depth-exit use the measured baseline of the leg (bistro may fall
 to ~35 ms → 2000, monu1 may fall to ~8 ms → 9000). Both A/B legs must each
 cover ≥ 55 s of orbit time; the first profile sample (startup frame) is
-excluded from parsing (same as plan 001).
+excluded from parsing (same as plan 016).
 
 ## Scope
 
@@ -551,7 +553,7 @@ Append after `viewport_and_heatmap` (order MUST match the WGSL struct):
    | depth-exit (Step 4) | bistro_sm | | | | | |
    Also record: the smoke observations (edge artifact extent), the stats-leg
    cells/frag delta, and any tuning knobs touched (REPROJECT_PX).
-5. Do NOT update `advisor-plans/README.md` or `plans/README.md`; leave the
+5. Do NOT update `plans/README.md`; leave the
    diff uncommitted for review.
 
 ## Test plan

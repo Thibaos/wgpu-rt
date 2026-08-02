@@ -1,12 +1,13 @@
-# Plan 001: Measure the DDA render pass with GPU timestamps, then apply the two highest-leverage shader optimizations
+# Plan 016: Measure the DDA render pass with GPU timestamps, then apply the two highest-leverage shader optimizations
+
+> **History (2026-08-02)**: moved from `advisor-plans/001-dda-gpu-timing-and-shader-optimization.md` (improve-skill advisor batch, 2026-07-31) into the main plan index as plan 016. Terminal — see `plans/README.md` row 016.
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
 > report — do not improvise. When done, update the status row for this plan
-> in `advisor-plans/README.md` (you maintain that index; it is not the repo's
-> `plans/README.md`, which belongs to the project's own workflow — do not touch
-> it).
+> in `plans/README.md` (row 016 — reviewer-owned; the former advisor index
+> was folded into the repo's plan index on 2026-08-02).
 >
 > **Drift check (run first)**:
 > `git diff --stat 1881c54..HEAD -- assets/shaders/chunk.wgsl src/app.rs src/framework.rs`
@@ -208,7 +209,7 @@ All excerpts are from the working tree at `1881c54`. Verify each before editing.
   `CHUNK_TEXTURE_SIZE.width * VOXEL_SCALE`.
 - **Git workflow**: the repo's plans leave implementation diffs uncommitted for
   review. Do not commit unless explicitly instructed; do not touch
-  `plans/README.md` (project-owned). `advisor-plans/README.md` is yours.
+  `plans/README.md` (project-owned, reviewer-maintained).
 
 ## Commands you will need
 
@@ -804,8 +805,8 @@ In `assets/shaders/chunk.wgsl`:
    parse FPS + GPU ms.
 3. Confirm scope: `git status --short` → only `assets/shaders/chunk.wgsl`,
    `src/app.rs` (and `src/framework.rs` only if the executor needed a minimal
-   edit there, which must be reported) plus `advisor-plans/` files.
-4. Update this plan's row in `advisor-plans/README.md` to `DONE` and fill in
+   edit there, which must be reported) plus `plans/` files.
+4. Update this plan's row in `plans/README.md` to `DONE` and fill in
    the report table below in the plan file under "Report" (append it):
    | run | avg FPS | min/max FPS | avg GPU ms | verdict |
    |---|---|---|---|---|
@@ -817,7 +818,7 @@ In `assets/shaders/chunk.wgsl`:
    any artifact observations.
 
 **Verify**: all gates exit 0; the report table is filled; the row in
-`advisor-plans/README.md` is `DONE`.
+`plans/README.md` is `DONE`.
 
 ## Test plan
 
@@ -855,8 +856,8 @@ All of the following must be true:
       report table in this plan records all four runs.
 - [ ] `git status --short` shows only in-scope files changed (`chunk.wgsl`,
       `app.rs`, optionally a reported minimal `framework.rs` edit, plus
-      `advisor-plans/`).
-- [ ] `advisor-plans/README.md` row is `DONE` with the measured numbers.
+      `plans/`).
+- [ ] `plans/README.md` row is `DONE` with the measured numbers.
 
 ## STOP conditions
 

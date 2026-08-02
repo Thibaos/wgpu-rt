@@ -1,4 +1,6 @@
-# Plan 002: Replace per-proxy fragment DDA with a single cross-chunk fullscreen pass
+# Plan 017: Replace per-proxy fragment DDA with a single cross-chunk fullscreen pass
+
+> **History (2026-08-02)**: moved from `advisor-plans/002-cross-chunk-fullscreen-traversal.md` (improve-skill advisor batch, 2026-07-31) into the main plan index as plan 017. Terminal — see `plans/README.md` row 017.
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
@@ -17,7 +19,7 @@
 - **Priority**: P1
 - **Effort**: L — new render path (fullscreen pipeline + shader), gated by a temporary diagnostic probe and an A/B capture
 - **Risk**: MED-HIGH — replaces the proxy-cube rasterizer; the shader's traversal algorithm is preserved byte-for-byte, but the per-pixel ray changes source (interpolated proxy face → camera math), so a visual smoke gate is mandatory
-- **Depends on**: plan 001's GPU timestamp instrumentation (Step 0; uncommitted diff exists in worktree `/tmp/wgpu-rt-exec`)
+- **Depends on**: plan 016's GPU timestamp instrumentation (Step 0; uncommitted diff exists in worktree `/tmp/wgpu-rt-exec`)
 - **Category**: perf
 - **Planned at**: commit `1881c54`, 2026-07-31
 - **Issue**: (none)
@@ -58,7 +60,7 @@ when Step 0 says so). Verify each before editing.
 - `src/app.rs`:
   - `optional_features` (line 88-90 after 001) = `TIMESTAMP_QUERY`; the
     timestamp query set / resolve / staging buffers and the every-30-frames
-    readback log `GPU render pass: X.XXms` (from plan 001 — keep them).
+    readback log `GPU render pass: X.XXms` (from plan 016 — keep them).
   - `resource_bind_group_layout` at lines 270-298: binding 0 = `palette`
     storage (read), binding 1 = `binding_array<texture_3d<u32>>` with
     `count: Some(bind_group_count)`; `resource_bind_group` built at 308-320.
@@ -90,7 +92,7 @@ and mip 0 supplies material; caps `ROOT_CELL_CAP=24`, `REFINEMENT_CELL_CAP=8`,
 tie and negative-boundary rules as coded. The traversal **algorithm** is copied
 verbatim into the new shader — only the *caller* (which chunk, which span, how
 many DDAs per pixel) changes. ADR-0002 deferred cross-chunk traversal; this
-plan implements it with measured justification (plan 001 + Step 1 probe).
+plan implements it with measured justification (plan 016 + Step 1 probe).
 
 ### Repo conventions to follow
 
@@ -106,7 +108,7 @@ plan implements it with measured justification (plan 001 + Step 1 probe).
   equal to `CHUNK_TEXTURE_SIZE.width * VOXEL_SCALE`.
 - **Git workflow**: leave implementation diffs uncommitted for review. Do not
   commit; do not touch `plans/README.md` (project-owned) or
-  `advisor-plans/README.md` (reviewer-owned).
+  `plans/README.md` (reviewer-owned).
 
 ## Commands you will need
 
@@ -122,7 +124,7 @@ plan implements it with measured justification (plan 001 + Step 1 probe).
 | Lint | `cargo clippy --all-targets -- -D warnings` | exit 0 |
 | Perf capture | `WGPU_RT_ORBIT=1 ./target/debug/wgpu-rt.exe > /tmp/orbit_<tag>.log 2>&1 &` then wait, then `kill <pid>` | orbit logs 1 Hz, FPS + GPU-ms lines |
 
-**Display hygiene (important — learned from plan 001's run)**: the app opens
+**Display hygiene (important — learned from plan 016's run)**: the app opens
 on the user's live desktop and the session captures the screen during runs.
 Before every capture, close/minimize other applications so the display shows
 only the test window. Run captures sequentially, never in parallel, and always
@@ -169,10 +171,10 @@ The A/B gate needs GPU timestamps. If `src/app.rs` does not yet contain
 1. Apply the plan-001 instrumentation diff if the worktree still exists:
    `cd /tmp/wgpu-rt-exec && git diff > /tmp/p001.diff` then
    `cd <your-tree> && git apply /tmp/p001.diff`.
-   If that worktree is gone, re-implement plan 001 Step 1 exactly as written in
-   `advisor-plans/001-dda-gpu-timing-and-shader-optimization.md` (the full
+   If that worktree is gone, re-implement plan 016 Step 1 exactly as written in
+   `plans/016-dda-gpu-timing-and-shader-optimization.md` (the full
    code is there), including the **ungated** resolve+copy (16 B/frame) with the
-   every-30-frames map/readback, and the heatmap wiring (Step 2 of plan 001).
+   every-30-frames map/readback, and the heatmap wiring (Step 2 of plan 016).
 2. Verify: `grep -c "GPU render pass:" /tmp/orbit_instr.log` ≥ 1 on a short
    run (~20 s), and `cargo test` passes.
 
@@ -226,7 +228,7 @@ Step 3, so it never contaminates the A/B.
        probe[0], probe[1], width, height
    );
    ```
-   (atomic buffers read back as u32s; reuse the map pattern from plan 001).
+   (atomic buffers read back as u32s; reuse the map pattern from plan 016).
 4. `cargo build`, one orbit capture (~70 s) into `/tmp/orbit_probe.log`.
    From the last readback rows, compute:
    - `invocation_ratio = invocations / (width * height)` — average number of
@@ -248,7 +250,7 @@ Step 3, so it never contaminates the A/B.
 
 ### Step 2: Baseline capture (fresh numbers to beat)
 
-Same protocol as plan 001 Step 3, with the probe removed and the
+Same protocol as plan 016 Step 3, with the probe removed and the
 instrumentation in place:
 
 `cargo build`, then `WGPU_RT_ORBIT=1 ./target/debug/wgpu-rt.exe >
@@ -260,7 +262,7 @@ grep -oE "GPU render pass: [0-9.]+ms" /tmp/orbit_base2.log | grep -oE "[0-9.]+" 
 ```
 
 Sanity: avg GPU ms ≈ 40 ms (1000/FPS), avg FPS ~23-25. If GPU ms has drifted
->15% from plan 001's 40.06 ms, STOP and report (the machine/build changed
+>15% from plan 016's 40.06 ms, STOP and report (the machine/build changed
 underneath you; the A/B is not comparable).
 
 ### Step 3: Implement the cross-chunk fullscreen pass
@@ -516,7 +518,7 @@ fn chunk_cross_wgsl_parses_and_validates() {
 4. Report the table (baseline2 / cross-chunk / final) plus the Step-1 probe
    numbers (multiplicity, samples per fragment, covered ratio) and the
    visual-smoke verdict (what changed at overlaps, nearest-wins behavior).
-   Do NOT update `advisor-plans/README.md` (reviewer-owned).
+   Do NOT update `plans/README.md` (reviewer-owned).
 
 ## Test plan
 
@@ -526,7 +528,7 @@ fn chunk_cross_wgsl_parses_and_validates() {
   `tests/hierarchical_mip_dda.rs` (CPU reference) must keep passing — it
   guards the traversal contract the copied core relies on.
 - Perf evidence: Step-1 probe (multiplicity) + Step-2/4/5 orbit A/B captures,
-  same deterministic ~70 s window as plan 001.
+  same deterministic ~70 s window as plan 016.
 
 ## Done criteria
 
@@ -534,7 +536,7 @@ fn chunk_cross_wgsl_parses_and_validates() {
 - [ ] `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` exit 0.
 - [ ] Step-1 probe measured and reported; gate decision recorded (proceed or
       STOP with numbers). Probe code fully reverted.
-- [ ] Baseline2 within ±15% of plan 001's 40.06 ms avg GPU.
+- [ ] Baseline2 within ±15% of plan 016's 40.06 ms avg GPU.
 - [ ] Visual smoke: no cracks/holes/wrong colors; overlap pixels show
       nearest-wins; heatmap works.
 - [ ] Fullscreen pass passed its ≥5% gate (avg GPU ms ≤ 0.95 × baseline2);
@@ -549,7 +551,7 @@ Stop and report (do not improvise) if:
 - Drift check or Current-state excerpts do not match the live tree.
 - Step-1 probe shows `invocation_ratio ≤ 1.15` (the redundancy lever is
   small) — report the numbers and recommend half-res/compute instead.
-- Baseline2 GPU ms drifts >15% from plan 001's 40.06 ms (environment drift;
+- Baseline2 GPU ms drifts >15% from plan 016's 40.06 ms (environment drift;
   A/B not comparable).
 - Step-4 gate fails after one re-run to rule out noise — revert the fullscreen
   pass and report (do not loosen the gate or stack unmeasured changes).

@@ -1,5 +1,5 @@
 //! Design A renderer: a fullscreen compute ray-query pass against a TLAS of
-//! chunk AABBs (see advisor-plans/004). `WGPU_RT_RAYQUERY=1` swaps the
+//! chunk AABBs (see plans/019). `WGPU_RT_RAYQUERY=1` swaps the
 //! rasterized chunk-proxy pass for this compute pass + a blit to the surface.
 //!
 //! Dynamic-world properties preserved from the texture design: a chunk's BLAS
@@ -70,19 +70,16 @@ pub struct RayQueryResources {
     /// One BLAS per non-empty chunk (the chunk's static world bounds).
     /// Never read on the CPU: kept alive so the TLAS instance references stay
     /// valid.
-    #[expect(dead_code)]
     /// The world BLAS: one AABB primitive per chunk, built once; a dirty
     /// chunk only requires rebuilding the BLAS with new AABB data (all
     /// primitives, microseconds for 8-64 chunks).
-    pub world_blas: wgpu::Blas,
+    _world_blas: wgpu::Blas,
     /// Kept alive so the bind group's `AccelerationStructure` binding stays
     /// valid.
-    #[expect(dead_code)]
-    pub tlas: wgpu::Tlas,
+    _tlas: wgpu::Tlas,
     /// BLAS input data; Vulkan requires the buffer to outlive every BLAS
     /// built from it, and the DDA re-reads it via the storage binding.
-    #[expect(dead_code)]
-    aabb_buf: wgpu::Buffer,
+    _aabb_buf: wgpu::Buffer,
     rt_target: wgpu::Texture,
     rt_view: wgpu::TextureView,
     pub pipeline: wgpu::ComputePipeline,
@@ -430,9 +427,9 @@ impl RayQueryResources {
         });
 
         Self {
-            world_blas,
-            tlas,
-            aabb_buf,
+            _world_blas: world_blas,
+            _tlas: tlas,
+            _aabb_buf: aabb_buf,
             rt_target,
             rt_view,
             pipeline,

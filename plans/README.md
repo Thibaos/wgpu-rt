@@ -21,8 +21,23 @@ honor its STOP conditions, and update your row when done.
 | 011  | Hierarchical mip DDA traversal — phase 2 | P1 | L | — | DONE (verified 2026-07-31 at `b0f332c`: shader in `68a1481`, reference test committed in `cc56462`; 12/12 reference tests pass, full suite 22/22, fmt/clippy clean) |
 | 012  | Debug orbit camera for reliable scene coverage | P1 | S | — | DONE (executed 2026-07-31 in worktree `wgpu-rt-exec-012` branch `exec-012`; reviewer re-ran all gates: orbit tests 5/5, full suite 27/27, fmt/clippy clean, orbit smoke verified target=(41.6,16.0,28.8) radius=82.7m az advancing 6°/s, default run unchanged; diff uncommitted — merge is user's call) |
 | 013  | Complete plan 011 — hierarchical mip DDA CPU reference tests | P1 | M | 011 | REJECTED — deliverable already existed uncommitted in the plan-011 worktree `wgpu-rt-exec-011`; verified passing all gates, then committed in `cc56462`. No new work needed. |
+| 014  | Primary-view latency — instrumentation (heatmap + counters), in-world orbit, occluded-candidate early-out + tmax (Teardown finding 4), tight chunk AABBs (finding 3), chunk-size matrix last (data-gated) | P1 | L | 012 (orbit camera), Design A ray-query renderer | REJECTED — superseded by plan 015: the 8³ storage-buffer chunk rewrite retires the 256³ texture architecture this plan instrumented/optimized; its transferable pieces (early-out + tmax, stats/heatmap harness, orbit presets) are folded into 015 |
+| 015  | 8³-chunk rewrite — storage-buffer voxel pool, flat-DDA ray-query primary, retire raster (supersedes 014) | P0 | XL | 012 (orbit camera), Design A ray-query renderer (`f014d3b`) | TODO — planned 2026-08-02 from the grill session on `docs/research-teardown-hardware-ray-tracing.md` + the no-3D-textures direction; decisions recorded in the plan |
+| 016  | Measure the DDA render pass with GPU timestamps, then apply the two highest-leverage shader optimizations | P1 | M | — | DONE (advisor batch 2026-07-31, moved from `advisor-plans/001`): instrumentation rebuilt in-tree (env-gated timestamps + DDA counters) and committed with a headless bench; release: monu1 20-23 ms, bistro_sm 70-89 ms, church 58-105 ms GPU — GPU-bound, latency-bound (400-860M cells/s); Optim. A measured no gain (40.06→39.40/40.41 ms), gated/reverted |
+| 017  | Replace per-proxy fragment DDA with a single cross-chunk fullscreen pass (probe redundancy first, then A/B-gated nearest-wins rewrite) | P1 | L | 016 | BLOCKED (advisor batch 2026-07-31, moved from `advisor-plans/002`): Step-1 probe gate STOPPED the build — invocation_ratio 1.09 ≤ 1.15, overdraw 1.00-1.24x px; rewrite would save <9% of fragment work at MED-HIGH risk; probe reverted; early-Z experiment (frag_depth removal + front-to-back sort) also measured no GPU gain — depth restored; direction set: half-res or compute path → taken by plan 019 |
+| 018  | Depth-exit — terminate the chunk DDA at the previous frame's nearest surface | P1 | M | 016, `1817d7d` | REJECTED (advisor batch 2026-07-31, moved from `advisor-plans/003`): never executed — the fragment path it optimized was retired by plan 019 (Design A, `f014d3b`) |
+| 019  | Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass) | P0 | L | wgpu 30 ray-query/AS | DONE (advisor batch 2026-07-31, moved from `advisor-plans/004`): executed in-tree at `f014d3b`; primary pass 2.4-3.8x faster (monu1 21.0→6.4-8.9 ms, bistro_sm 60.7→16.7-17.2 ms GPU); basis for plans 014/015 |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
+
+## Plan index history
+
+- Plans 016–019 were folded in from the deleted `advisor-plans/` directory
+  (improve-skill advisor batch, 2026-07-31) on 2026-08-02. They predate plans
+  014–015 in creation order; IDs reflect merge order, not chronology. All four
+  are terminal — see their statuses. Their executor-instruction prose still
+  describes the old advisor workflow in places; treat them as historical
+  records.
 
 ## Dependency notes
 
@@ -88,6 +103,14 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 - **#9 (Clippy: collapsible-if in framework.rs)**: Fixed in commit `40eee8d` — clippy passes with `-D warnings` at HEAD.
 - **#10 (cargo fmt diff in tree64_renderer.rs)**: Fixed in commit `40eee8d` — `cargo fmt --check` passes at HEAD.
+- **Advisor batch 2026-07-31 (plans 016–019)**: *cross-chunk fullscreen
+  traversal* — rejected by probe (overdraw 1.00-1.24x px, invocation_ratio
+  1.09 ≤ 1.15 gate; <9% fragment work at MED-HIGH risk); *early-Z experiment*
+  (frag_depth removal + front-to-back sort) — measured no GPU gain, depth
+  restored; *half-res DDA + upscale* — deferred (quality trade-off; enabled
+  later by the compute path in plan 019); *compute-shader ray-query rewrite* —
+  adopted as plan 019 rather than deferred; *heatmap diagnostics* — folded
+  into plan 016.
 
 ## Dependency notes
 
@@ -100,7 +123,7 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 | # | Finding | Category | Priority |
 |---|---------|----------|----------|
 | 3  | Thin test coverage: player controller, framework, loader, render path untested (22 tests exist; see reconcile notes) | Tests | P2 |
-| 4  | `tree64` git dep unpinned (`Cargo.toml:15`, no `rev`) | Dependencies | P2 |
+| 4  | `tree64` dead dependency still listed in `Cargo.toml` (unused in code) — removal scheduled in plan 015 | Dependencies | P2 |
 | 5  | No CI, no fmt/clippy in automation | DX | P2 |
 | 6  | No README | Docs | P3 |
 
@@ -111,4 +134,7 @@ Resolved since the last pass: #7 (unused shader files — `assets/shaders/` hold
 ## Additional plan notes
 
 - Plan 006 is the recommended next step for the `4096 → 16384` bake regression. It deliberately does not read or benchmark `assets/models/bistro.vox` during implementation.
-- Plan 007 was designed via grilling session and domain modeling (2026-07-11). See `CONTEXT.md` for the domain glossary and `docs/adr/0001-tree64-dual-use.md` for the architecture decision on using Tree64 for both GPU rendering and CPU collision.
+- Plan 007 was designed via grilling session and domain modeling (2026-07-11). See `CONTEXT.md` for the domain glossary. (The `docs/adr/` series was retired 2026-08-02 — Tree64 docs and ADR-0002 removed by user decision; architecture decisions now live in plan files.)
+- Plans 016–019 are the folded-in 2026-07-31 advisor batch (terminal). The
+  depth-exit (018) and cross-chunk (017) levers were both obsoleted by plan
+  019's compute ray-query, which removes the fragment path entirely.

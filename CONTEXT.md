@@ -1,20 +1,16 @@
 # wgpu-rt
 
-A real-time 3D voxel rendering engine. Renders sparse voxel worlds using a Tree64
-acceleration structure and compute-shader ray tracing.
+A real-time 3D voxel rendering engine. Renders sparse voxel worlds as chunked
+3D textures, traversed by a hierarchical mip DDA (raster path) or a TLAS
+ray-query (experimental hardware-RT path).
 
 ## Language
 
 **World**:
-The scene loaded from a baked .world file — a single sparse voxel tree covering
-the full volume, plus a 256-color palette.
+The scene loaded from a .vox file: a sparse set of occupied voxels (a
+world-coordinate HashMap) plus a 256-color palette, split into Chunks for
+rendering.
 _Avoid_: Scene, level, map
-
-**Tree64**:
-The sparse 4³ voxel tree acceleration structure used for both GPU ray traversal
-and CPU collision queries. Each node covers 4³ children; leaf nodes store material
-indices.
-_Avoid_: Octree, BVH
 
 **Voxel Scale**:
 1 voxel = ⅛ meter (0.125 m). All physical dimensions — player size, step height,

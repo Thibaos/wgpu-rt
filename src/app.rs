@@ -111,7 +111,7 @@ struct ProfileAccum {
 }
 
 /// `WGPU_RT_RAYQUERY=1` selects the Design A renderer (see
-/// advisor-plans/004). The experimental ray-query feature is Vulkan-only, so
+/// plans/019). The experimental ray-query feature is Vulkan-only, so
 /// it is requested at device creation only when this gate is set.
 fn rayquery_requested() -> bool {
     std::env::var("WGPU_RT_RAYQUERY").is_ok_and(|v| v == "1")

@@ -1,14 +1,16 @@
-# Plan 004: Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass)
+# Plan 019: Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass)
+
+> **History (2026-08-02)**: moved from `advisor-plans/004-design-a-ray-query-renderer.md` (improve-skill advisor batch, 2026-07-31) into the main plan index as plan 019. Terminal (executed in-tree at `f014d3b`) — see `plans/README.md` row 019.
 
 > **Executor instructions**: Follow this plan step by step. Run every
 > verification command and confirm the expected result before moving to the
 > next step. If anything in the "STOP conditions" section occurs, stop and
 > report — do not improvise. Keep the diff uncommitted for review, and do NOT
-> touch `plans/README.md` or `advisor-plans/README.md`.
+> touch `plans/README.md`.
 >
 > **Drift check (run first)**:
-> `git status --short` — expected: untracked `advisor-plans/003-*` and
-> `thoughts.md` only (plan 003 was never committed). HEAD should be `bb2970d`.
+> `git status --short` — expected: untracked `plans/018-*` and
+> `thoughts.md` only (plan 018 was never committed). HEAD should be `bb2970d`.
 
 ## Status
 
