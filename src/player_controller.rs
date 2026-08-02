@@ -52,7 +52,7 @@ impl PlayerController {
     const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
     const MIN_PITCH: f32 = -Self::MAX_PITCH;
 
-    pub fn camera_position(&self) -> Vec3 {
+    pub const fn camera_position(&self) -> Vec3 {
         self.translation
     }
 
@@ -72,31 +72,51 @@ impl PlayerController {
         let mut velocity = Vec3::ZERO;
 
         if keys.contains(&FORWARD) {
-            velocity += forward;
+            velocity = Vec3::new(
+                velocity.x + forward.x,
+                velocity.y + forward.y,
+                velocity.z + forward.z,
+            );
         } else if keys.contains(&BACKWARD) {
-            velocity -= forward;
+            velocity = Vec3::new(
+                velocity.x - forward.x,
+                velocity.y - forward.y,
+                velocity.z - forward.z,
+            );
         }
         if keys.contains(&RIGHT) {
-            velocity += right;
+            velocity = Vec3::new(
+                velocity.x + right.x,
+                velocity.y + right.y,
+                velocity.z + right.z,
+            );
         } else if keys.contains(&LEFT) {
-            velocity -= right;
+            velocity = Vec3::new(
+                velocity.x - right.x,
+                velocity.y - right.y,
+                velocity.z - right.z,
+            );
         }
         if keys.contains(&UP) {
-            velocity += Vec3::Y;
+            velocity = Vec3::new(velocity.x + 0.0, velocity.y + 1.0, velocity.z + 0.0);
         } else if keys.contains(&CONTROL) {
-            velocity -= Vec3::Y;
+            velocity = Vec3::new(velocity.x + 0.0, velocity.y - 1.0, velocity.z + 0.0);
         }
 
         velocity = velocity.normalize_or_zero();
 
-        self.translation += velocity * delta_time.as_secs_f32() * self.speed;
+        self.translation = Vec3::new(
+            (velocity.x * delta_time.as_secs_f32()).mul_add(self.speed, self.translation.x),
+            (velocity.y * delta_time.as_secs_f32()).mul_add(self.speed, self.translation.y),
+            (velocity.z * delta_time.as_secs_f32()).mul_add(self.speed, self.translation.z),
+        );
 
         self.needs_view_update = true;
     }
 
     pub fn rotate(&mut self, delta: (f64, f64)) {
-        self.yaw -= (delta.0 * self.sensitivity) as f32;
-        self.pitch -= (delta.1 * self.sensitivity) as f32;
+        self.yaw -= crate::utils::f64_to_f32(delta.0 * self.sensitivity);
+        self.pitch -= crate::utils::f64_to_f32(delta.1 * self.sensitivity);
 
         self.yaw = self.yaw.rem_euclid(TAU);
 
@@ -109,16 +129,24 @@ impl PlayerController {
         let yaw_q = Quat::from_rotation_y(self.yaw);
         let pitch_q = Quat::from_rotation_x(self.pitch);
 
-        yaw_q * pitch_q
+        yaw_q.mul_quat(pitch_q)
     }
 
     fn compute_view(&mut self) {
         let camera_pos = self.camera_position();
         let rot = self.orientation();
-        let forward = rot * Vec3::new(0.0, 0.0, -1.0);
-        let up = rot * Vec3::new(0.0, 1.0, 0.0);
+        let forward = rot.mul_vec3(Vec3::new(0.0, 0.0, -1.0));
+        let up = rot.mul_vec3(Vec3::new(0.0, 1.0, 0.0));
 
-        self.view = glam::camera::rh::view::look_at_mat4(camera_pos, camera_pos + forward, up);
+        self.view = glam::camera::rh::view::look_at_mat4(
+            camera_pos,
+            Vec3::new(
+                camera_pos.x + forward.x,
+                camera_pos.y + forward.y,
+                camera_pos.z + forward.z,
+            ),
+            up,
+        );
     }
 
     pub fn handle_speed_change(&mut self, y_delta: f32) {
@@ -149,8 +177,8 @@ pub struct OrbitParams {
 /// every 30 s. Chosen so rays hit geometry from grazing to steep angles.
 pub const DEFAULT_ORBIT_PARAMS: OrbitParams = OrbitParams {
     az_period: 60.0,
-    elev_min: 5.0 * std::f32::consts::PI / 180.0,
-    elev_max: 55.0 * std::f32::consts::PI / 180.0,
+    elev_min: 5.0_f32.to_radians(),
+    elev_max: 55.0_f32.to_radians(),
     elev_period: 30.0,
 };
 
@@ -160,13 +188,17 @@ pub const DEFAULT_ORBIT_PARAMS: OrbitParams = OrbitParams {
 /// always exactly `radius` from `target` and looks at it; up is +Y.
 pub fn orbit_pose(elapsed: f32, target: Vec3, radius: f32, params: &OrbitParams) -> (Vec3, Vec3) {
     let azimuth = std::f32::consts::TAU * elapsed / params.az_period;
-    let elev = params.elev_min
-        + (params.elev_max - params.elev_min)
-            * 0.5
-            * (1.0 - (std::f32::consts::TAU * elapsed / params.elev_period).cos());
+    let elev = ((params.elev_max - params.elev_min) * 0.5).mul_add(
+        1.0 - (std::f32::consts::TAU * elapsed / params.elev_period).cos(),
+        params.elev_min,
+    );
     let (sin_e, cos_e) = elev.sin_cos();
     let (sin_a, cos_a) = azimuth.sin_cos();
-    let pos = target + radius * Vec3::new(cos_e * cos_a, sin_e, cos_e * sin_a);
+    let pos = Vec3::new(
+        (cos_e * cos_a).mul_add(radius, target.x),
+        sin_e.mul_add(radius, target.y),
+        (cos_e * sin_a).mul_add(radius, target.z),
+    );
     (pos, target)
 }
 
@@ -176,9 +208,21 @@ pub fn orbit_pose(elapsed: f32, target: Vec3, radius: f32, params: &OrbitParams)
 /// `chunk_origins` are the world-space origins of the non-empty chunks.
 pub fn orbit_radius_from_chunks(chunk_origins: &[Vec3], chunk_side_world: f32, margin: f32) -> f32 {
     let half = chunk_side_world * 0.5;
-    let target = chunk_origins.iter().fold(Vec3::ZERO, |acc, o| acc + *o)
-        / chunk_origins.len().max(1) as f32
-        + Vec3::splat(half);
+    // f32 component math (not subject to `arithmetic_side_effects`).
+    let mut tx = 0.0f32;
+    let mut ty = 0.0f32;
+    let mut tz = 0.0f32;
+    for o in chunk_origins {
+        tx += o.x;
+        ty += o.y;
+        tz += o.z;
+    }
+    let inv_count = crate::utils::usize_to_f32(chunk_origins.len().max(1)).recip();
+    let target = Vec3::new(
+        tx.mul_add(inv_count, half),
+        ty.mul_add(inv_count, half),
+        tz.mul_add(inv_count, half),
+    );
     let mut max_dist = 0.0f32;
     for o in chunk_origins {
         for x in [o.x, o.x + chunk_side_world] {
@@ -193,6 +237,19 @@ pub fn orbit_radius_from_chunks(chunk_origins: &[Vec3], chunk_side_world: f32, m
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::suboptimal_flops,
+    clippy::uninlined_format_args,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 mod tests {
     use super::*;
     use std::f32::consts::PI;

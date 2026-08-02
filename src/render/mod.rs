@@ -8,7 +8,7 @@ pub const VOXEL_SCALE: f32 = 0.125;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(crate) struct Vertex {
+pub struct Vertex {
     _pos: [f32; 4],
     _tex_coord: [f32; 2],
 }
@@ -26,8 +26,13 @@ pub struct Instance {
 
 impl Instance {
     pub fn to_raw(&self) -> InstanceRaw {
-        let half_chunk_world = CHUNK_SIZE * VOXEL_SCALE * 0.5;
-        let center = self.position + half_chunk_world;
+        let half_chunk_world =
+            CHUNK_SIZE.mul_add(glam::Vec3::splat(VOXEL_SCALE * 0.5), glam::Vec3::ZERO);
+        let center = glam::Vec3::new(
+            self.position.x + half_chunk_world.x,
+            self.position.y + half_chunk_world.y,
+            self.position.z + half_chunk_world.z,
+        );
         InstanceRaw {
             model: (Mat4::from_scale_rotation_translation(
                 half_chunk_world,
@@ -42,7 +47,7 @@ impl Instance {
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CameraUniforms {
+pub struct CameraUniforms {
     pub camera_pos: [f32; 4],
     pub view_inv: [[f32; 4]; 4],
     pub proj_inv: [[f32; 4]; 4],
@@ -51,13 +56,17 @@ pub(crate) struct CameraUniforms {
 }
 
 const fn vertex(pos: [i8; 3], tc: [i8; 2]) -> Vertex {
-    Vertex {
+    // i8 -> f32 via `as`: `From<i8>` is not const-stable; inputs are the
+    // literals below (-1..=1), which are exactly representable.
+    #[allow(clippy::as_conversions)]
+    let v = Vertex {
         _pos: [pos[0] as f32, pos[1] as f32, pos[2] as f32, 1.0],
         _tex_coord: [tc[0] as f32, tc[1] as f32],
-    }
+    };
+    v
 }
 
-pub(crate) const fn create_vertices() -> ([Vertex; 24], [u16; INDEX_COUNT]) {
+pub const fn create_vertices() -> ([Vertex; 24], [u16; INDEX_COUNT]) {
     let vertex_data = [
         // top (0, 0, 1)
         vertex([-1, -1, 1], [0, 0]),

@@ -13,6 +13,7 @@
 //!   sibling recovery). It intentionally applies NO shader caps (24/8/2048);
 //!   those are shader safety bounds, not algorithm behavior.
 //! - `oracle` is an independent direct mip-0 DDA with its own ray/AABB
+
 //!   entry/exit and an analytical termination bound of `3 * BASE_SIZE + 1`
 //!   positive-width cell iterations. It samples only `levels[0]`.
 //!
@@ -78,11 +79,11 @@ enum Fixture {
 impl Fixture {
     fn sparse(levels: Vec<HashMap<IVec3, u8>>) -> Self {
         assert_eq!(levels.len(), 6, "need exactly levels 0..=5");
-        Fixture::Sparse(levels)
+        Self::Sparse(levels)
     }
 
-    fn full(material: u8) -> Self {
-        Fixture::Full(material)
+    const fn full(material: u8) -> Self {
+        Self::Full(material)
     }
 
     /// Builds levels 1..=5 from sparse mip-0 cells using the same 2^3
@@ -101,13 +102,13 @@ impl Fixture {
             }
             levels.push(level);
         }
-        Fixture::Sparse(levels)
+        Self::Sparse(levels)
     }
 
     fn sample(&self, mip: u32, coord: IVec3) -> u8 {
         match self {
-            Fixture::Full(mat) => *mat,
-            Fixture::Sparse(levels) => levels[mip as usize].get(&coord).copied().unwrap_or(0),
+            Self::Full(mat) => *mat,
+            Self::Sparse(levels) => levels[mip as usize].get(&coord).copied().unwrap_or(0),
         }
     }
 }
@@ -800,8 +801,8 @@ fn zero_length_ray_is_a_miss() {
 impl Fixture {
     fn into_sparse(self) -> Vec<HashMap<IVec3, u8>> {
         match self {
-            Fixture::Sparse(levels) => levels,
-            Fixture::Full(_) => panic!("Full fixture has no sparse levels"),
+            Self::Sparse(levels) => levels,
+            Self::Full(_) => panic!("Full fixture has no sparse levels"),
         }
     }
 }

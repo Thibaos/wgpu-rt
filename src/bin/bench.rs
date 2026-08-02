@@ -7,14 +7,14 @@
 //! Usage:
 //!     cargo run --release --bin bench -- [frames]
 //!
-//! Modes (env vars, read by App::init):
-//!   WGPU_RT_PROFILE=1   per-frame timestamp queries + blocking Wait readback
-//!   WGPU_RT_STATS=1     compile the shader with atomic DDA-work counters.
+//! Modes (env vars, read by `App::init`):
+//!   `WGPU_RT_PROFILE=1`   per-frame timestamp queries + blocking Wait readback
+//!   `WGPU_RT_STATS=1`     compile the shader with atomic DDA-work counters.
 //!                       The storage writes are a fragment-shader side effect,
 //!                       which disables hardware early-Z — so this leg measures
 //!                       the TOTAL traversal work (fragments, DDA cells, hits),
 //!                       i.e. the cost WITHOUT early-Z culling. Run with
-//!                       WGPU_RT_STATS=0 for the real (early-Z) GPU time.
+//!                       `WGPU_RT_STATS=0` for the real (early-Z) GPU time.
 
 #[path = "../app.rs"]
 #[allow(dead_code)]
@@ -66,7 +66,10 @@ fn main() {
         force_fallback_adapter: false,
         apply_limit_buckets: false,
     }))
-    .expect("no suitable adapter");
+    .unwrap_or_else(|e| {
+        log::error!("no suitable adapter: {e}");
+        std::process::abort()
+    });
     let info = adapter.get_info();
     log::info!("[bench] adapter: {} ({:?})", info.name, info.backend);
 
@@ -83,7 +86,10 @@ fn main() {
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         trace: wgpu::Trace::Off,
     }))
-    .expect("device request failed");
+    .unwrap_or_else(|e| {
+        log::error!("device request failed: {e}");
+        std::process::abort()
+    });
 
     let width = 1920u32;
     let height = 1080u32;
@@ -126,10 +132,8 @@ fn main() {
         app.render(&color_view, &device, &queue, &keys);
     }
     let wall = start.elapsed().as_secs_f32();
+    let fps = crate::utils::u32_to_f32(frames) / wall;
     log::info!(
-        "[bench] {} frames in {:.2}s wall ({:.1} fps wall, includes Wait-poll sync)",
-        frames,
-        wall,
-        frames as f32 / wall
+        "[bench] {frames} frames in {wall:.2}s wall ({fps:.1} fps wall, includes Wait-poll sync)",
     );
 }

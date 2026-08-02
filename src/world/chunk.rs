@@ -12,8 +12,12 @@ pub const CHUNK_TEXTURE_SIZE: wgpu::Extent3d = wgpu::Extent3d {
 };
 
 pub const CHUNK_SIZE: Vec3 = Vec3 {
+    // u32 texture dims (256) are exactly representable in f32.
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     x: CHUNK_TEXTURE_SIZE.width as f32,
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     y: CHUNK_TEXTURE_SIZE.height as f32,
+    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     z: CHUNK_TEXTURE_SIZE.depth_or_array_layers as f32,
 };
 
@@ -21,7 +25,12 @@ pub const CHUNKS_X: u32 = 8;
 pub const CHUNKS_Y: u32 = 1;
 pub const CHUNKS_Z: u32 = 8;
 
+pub const CHUNKS_X_INT: i32 = 8;
+pub const CHUNKS_Y_INT: i32 = 1;
+pub const CHUNKS_Z_INT: i32 = 8;
+
 pub const TOTAL_CHUNKS: u32 = CHUNKS_X * CHUNKS_Y * CHUNKS_Z;
+pub const TOTAL_CHUNKS_INT: i32 = CHUNKS_X_INT * CHUNKS_Y_INT * CHUNKS_Z_INT;
 
 type ChunkVoxelData = HashMap<(u8, u8, u8), u8>;
 
@@ -32,6 +41,9 @@ pub struct Chunk {
 }
 
 impl Chunk {
+    // HashMap::new is not const-stable in this toolchain; the lint's suggestion
+    // to make this `const` does not compile, so it is allowed explicitly.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn new(position: IVec3) -> Self {
         Self {
             position,
@@ -39,7 +51,7 @@ impl Chunk {
         }
     }
 
-    pub fn grid_position(&self) -> IVec3 {
+    pub const fn grid_position(&self) -> IVec3 {
         self.position
     }
 
@@ -73,19 +85,26 @@ impl Chunk {
     }
 
     fn flatten_voxels(&self, size: u32) -> Vec<u8> {
-        let total = (size as usize) * (size as usize) * (size as usize);
-        let mut bytes = vec![0u8; total];
+        let size_u = usize::try_from(size).unwrap_or_default();
+        let mut bytes = vec![0u8; size_u.pow(3)];
 
         for (&(x, y, z), &v) in &self.voxels {
-            let idx = (z as usize * size as usize + y as usize) * size as usize + x as usize;
-            bytes[idx] = v;
+            let mut idx = usize::from(z);
+            idx = idx.saturating_mul(size_u);
+            idx = idx.saturating_add(usize::from(y));
+            idx = idx.saturating_mul(size_u);
+            idx = idx.saturating_add(usize::from(x));
+            let slot = bytes.get_mut(idx).unwrap_or_else(|| {
+                crate::utils::fatal(&format!("flatten_voxels: index {idx} out of range"))
+            });
+            *slot = v;
         }
         bytes
     }
 
     fn downsample_occupancy(src: &[u8], src_size: u32) -> Vec<u8> {
         let dst_size = src_size / 2;
-        let total = (dst_size as usize) * (dst_size as usize) * (dst_size as usize);
+        let total = usize::try_from(dst_size).unwrap_or_default().pow(3);
         let mut dst = vec![0u8; total];
 
         for z in 0..dst_size {
@@ -95,11 +114,15 @@ impl Chunk {
                     'blk: for dz in 0..2u32 {
                         for dy in 0..2u32 {
                             for dx in 0..2u32 {
-                                let sx = x * 2 + dx;
-                                let sy = y * 2 + dy;
-                                let sz = z * 2 + dz;
-                                let si = (sz * src_size + sy) * src_size + sx;
-                                let v = src[si as usize];
+                                let mut si = z.saturating_mul(2).saturating_add(dz);
+                                si = si.saturating_mul(src_size);
+                                si = si.saturating_add(y.saturating_mul(2).saturating_add(dy));
+                                si = si.saturating_mul(src_size);
+                                si = si.saturating_add(x.saturating_mul(2).saturating_add(dx));
+                                let v = src
+                                    .get(usize::try_from(si).unwrap_or_default())
+                                    .copied()
+                                    .unwrap_or_default();
                                 if v != 0 {
                                     found = v;
                                     break 'blk;
@@ -107,8 +130,16 @@ impl Chunk {
                             }
                         }
                     }
-                    let di = (z * dst_size + y) * dst_size + x;
-                    dst[di as usize] = found;
+                    let mut di = z.saturating_mul(dst_size);
+                    di = di.saturating_add(y);
+                    di = di.saturating_mul(dst_size);
+                    di = di.saturating_add(x);
+                    let slot = dst
+                        .get_mut(usize::try_from(di).unwrap_or_default())
+                        .unwrap_or_else(|| {
+                            crate::utils::fatal(&format!("downsample: index {di} out of range"))
+                        });
+                    *slot = found;
                 }
             }
         }
@@ -119,7 +150,7 @@ impl Chunk {
         let desc = wgpu::TextureDescriptor {
             label: Some("chunk_texture"),
             size: CHUNK_TEXTURE_SIZE,
-            mip_level_count: MIP_LEVELS as u32,
+            mip_level_count: u32::try_from(MIP_LEVELS).unwrap_or_default(),
             sample_count: 1,
             dimension: wgpu::TextureDimension::D3,
             format: wgpu::TextureFormat::R8Uint,
@@ -132,17 +163,18 @@ impl Chunk {
         let mip_bytes = self.to_mip_bytes();
 
         for (mip, data) in mip_bytes.iter().enumerate() {
+            let level = u32::try_from(mip).unwrap_or_default();
+            let divisor = 2u32.pow(level);
             let dims = Extent3d {
-                width: CHUNK_TEXTURE_SIZE.width / 2u32.pow(mip as u32),
-                height: CHUNK_TEXTURE_SIZE.height / 2u32.pow(mip as u32),
-                depth_or_array_layers: CHUNK_TEXTURE_SIZE.depth_or_array_layers
-                    / 2u32.pow(mip as u32),
+                width: CHUNK_TEXTURE_SIZE.width.div_euclid(divisor),
+                height: CHUNK_TEXTURE_SIZE.height.div_euclid(divisor),
+                depth_or_array_layers: CHUNK_TEXTURE_SIZE.depth_or_array_layers.div_euclid(divisor),
             };
 
             queue.write_texture(
                 wgpu::TexelCopyTextureInfoBase {
                     texture: &tex,
-                    mip_level: mip as u32,
+                    mip_level: level,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
@@ -161,6 +193,17 @@ impl Chunk {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
 mod tests {
     use super::*;
 

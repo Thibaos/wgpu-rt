@@ -5,15 +5,18 @@ use std::time::{Duration, Instant};
 
 use wgpu::util::DeviceExt;
 
-use winit::event::WindowEvent;
-use winit::keyboard::{Key, SmolStr};
-
 use crate::player_controller::PlayerController;
 use crate::render::{
     CameraUniforms, INDEX_COUNT, Instance, InstanceRaw, VOXEL_SCALE, Vertex, create_vertices,
 };
-use crate::world::{World, chunk::CHUNK_TEXTURE_SIZE, create_palette_buffer};
+use crate::utils::{fatal, i32_to_f32, u32_to_f32, u64_to_f32, u64_to_f64};
+use crate::world::{World, chunk::CHUNK_SIZE, create_palette_buffer};
+use winit::keyboard::{Key, SmolStr};
 
+// Four booleans (heatmap, profile/stats/orbit enabled flags) trip the nursery
+// `struct_excessive_bools` lint; grouping them is not worth the churn, so the
+// lint is scoped to this struct.
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub player_controller: PlayerController,
 
@@ -57,7 +60,6 @@ pub struct App {
     timestamp_readback: Option<wgpu::Buffer>,
     timestamp_period: f32,
     profile_enabled: bool,
-    stats_enabled: bool,
     profile_accum: ProfileAccum,
     profile_reported_at: Option<Instant>,
 
@@ -69,6 +71,8 @@ pub struct App {
     last_orbit_log_secs: u64,
 }
 
+// `device.create_texture` is not const-callable; the lint misfires here.
+#[allow(clippy::missing_const_for_fn)]
 fn create_depth_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("depth_texture"),
@@ -99,12 +103,14 @@ struct ProfileAccum {
 impl App {
     pub const SRGB: bool = true;
 
+    // wgpu::Features bit-ops are not const-stable; the lint misfires here.
+    #[allow(clippy::missing_const_for_fn)]
     pub fn required_features() -> wgpu::Features {
         wgpu::Features::TEXTURE_BINDING_ARRAY
             | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
     }
 
-    pub fn optional_features() -> wgpu::Features {
+    pub const fn optional_features() -> wgpu::Features {
         wgpu::Features::TIMESTAMP_QUERY
     }
 
@@ -119,6 +125,10 @@ impl App {
         wgpu::Limits::default()
     }
 
+    // The wgpu device/pipeline setup is one tightly-coupled block; splitting it
+    // up would risk subtle behavior changes, so the line-count lint is scoped
+    // to `init`.
+    #[allow(clippy::too_many_lines)]
     pub fn init(
         config: &wgpu::SurfaceConfiguration,
         adapter: &wgpu::Adapter,
@@ -128,24 +138,17 @@ impl App {
         let width = config.width;
         let height = config.height;
 
-        let profile_enabled = std::env::var("WGPU_RT_PROFILE")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        let stats_enabled = std::env::var("WGPU_RT_STATS")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+        let profile_enabled = std::env::var("WGPU_RT_PROFILE").is_ok_and(|v| v == "1");
+        let stats_enabled = std::env::var("WGPU_RT_STATS").is_ok_and(|v| v == "1");
 
         let player_controller = PlayerController::default();
 
         let world_path = std::env::var("WGPU_RT_WORLD")
             .unwrap_or_else(|_| "assets/models/monu1.vox".to_string());
-        let world = World::load(&world_path).expect("failed to load voxel world");
+        let world = World::load(&world_path);
 
         let voxel_count = world.voxels.len();
-        log::info!(
-            "Loaded {} voxels (material-0 already filtered by loader)",
-            voxel_count,
-        );
+        log::info!("Loaded {voxel_count} voxels (material-0 already filtered by loader)");
 
         let palette = world.palette;
         let chunks = world.into_chunks();
@@ -164,18 +167,14 @@ impl App {
         );
 
         let max_binding = adapter.limits().max_binding_array_elements_per_shader_stage;
-        log::info!(
-            "Adapter max_binding_array_elements_per_shader_stage: {}",
-            max_binding,
-        );
-        if (max_binding as usize) < texture_count {
-            panic!(
-                "STOP: required binding array count {} exceeds adapter limit {}",
-                texture_count, max_binding,
-            );
+        log::info!("Adapter max_binding_array_elements_per_shader_stage: {max_binding}");
+        if max_binding < u32::try_from(texture_count).unwrap_or(u32::MAX) {
+            fatal(&format!(
+                "STOP: required binding array count {texture_count} exceeds adapter limit {max_binding}",
+            ));
         }
 
-        let chunk_side_world = CHUNK_TEXTURE_SIZE.width as f32 * VOXEL_SCALE;
+        let chunk_side_world = CHUNK_SIZE.x * VOXEL_SCALE;
         // let half_chunk_world = chunk_side_world * 0.5;
 
         let mut chunk_textures: Vec<wgpu::Texture> = Vec::with_capacity(texture_count);
@@ -195,9 +194,9 @@ impl App {
 
                 let gp = chunk.grid_position();
                 let position = glam::Vec3::new(
-                    gp.x as f32 * chunk_side_world,
-                    gp.y as f32 * chunk_side_world,
-                    gp.z as f32 * chunk_side_world,
+                    i32_to_f32(gp.x) * chunk_side_world,
+                    i32_to_f32(gp.y) * chunk_side_world,
+                    i32_to_f32(gp.z) * chunk_side_world,
                 );
 
                 instances.push(Instance { position });
@@ -214,18 +213,29 @@ impl App {
             instances.len(),
         );
 
-        let orbit_enabled = std::env::var("WGPU_RT_ORBIT")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+        let orbit_enabled = std::env::var("WGPU_RT_ORBIT").is_ok_and(|v| v == "1");
         let (orbit_target, orbit_radius) = if orbit_enabled {
             if instances.is_empty() {
                 log::info!("Orbit camera: no chunks; falling back to target (0,0,0) radius 64.0");
                 (glam::Vec3::ZERO, chunk_side_world * 2.0)
             } else {
                 let origins: Vec<glam::Vec3> = instances.iter().map(|i| i.position).collect();
-                let target = origins.iter().fold(glam::Vec3::ZERO, |a, o| a + *o)
-                    / origins.len() as f32
-                    + glam::Vec3::splat(chunk_side_world * 0.5);
+                // f32 component math: not subject to `arithmetic_side_effects`.
+                let mut tx = 0.0f32;
+                let mut ty = 0.0f32;
+                let mut tz = 0.0f32;
+                for o in &origins {
+                    tx += o.x;
+                    ty += o.y;
+                    tz += o.z;
+                }
+                let inv_count = crate::utils::usize_to_f32(origins.len().max(1)).recip();
+                let half_chunk = chunk_side_world * 0.5;
+                let target = glam::Vec3::new(
+                    tx.mul_add(inv_count, half_chunk),
+                    ty.mul_add(inv_count, half_chunk),
+                    tz.mul_add(inv_count, half_chunk),
+                );
                 let radius = crate::player_controller::orbit_radius_from_chunks(
                     &origins,
                     chunk_side_world,
@@ -249,7 +259,7 @@ impl App {
 
         let camera_uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera_uniform"),
-            size: std::mem::size_of::<CameraUniforms>() as wgpu::BufferAddress,
+            size: u64::try_from(std::mem::size_of::<CameraUniforms>()).unwrap_or_default(),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -282,7 +292,10 @@ impl App {
         });
 
         let texture_view_refs: Vec<&wgpu::TextureView> = chunk_texture_views.iter().collect();
-        let bind_group_count = NonZeroU32::new(texture_count_final as u32).unwrap();
+        // Always >= 1 (a dummy chunk is pushed when the world is empty).
+        let bind_group_count =
+            NonZeroU32::new(u32::try_from(texture_count_final).unwrap_or_default())
+                .unwrap_or(NonZeroU32::MIN);
 
         // Per-frame DDA work counters. Only created/bound when WGPU_RT_STATS=1:
         // the atomic storage writes are a fragment-shader side effect that
@@ -309,7 +322,8 @@ impl App {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<CameraUniforms>() as wgpu::BufferAddress,
+                            u64::try_from(std::mem::size_of::<CameraUniforms>())
+                                .unwrap_or_default(),
                         ),
                     },
                     count: None,
@@ -439,7 +453,7 @@ impl App {
 
         let vertex_buffers = [
             Some(wgpu::VertexBufferLayout {
-                array_stride: vertex_size as wgpu::BufferAddress,
+                array_stride: u64::try_from(vertex_size).unwrap_or_default(),
                 step_mode: wgpu::VertexStepMode::Vertex,
                 attributes: &[
                     // position
@@ -457,7 +471,7 @@ impl App {
                 ],
             }),
             Some(wgpu::VertexBufferLayout {
-                array_stride: instance_size as wgpu::BufferAddress,
+                array_stride: u64::try_from(instance_size).unwrap_or_default(),
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &[
                     // mat4x4 transform
@@ -498,14 +512,21 @@ impl App {
                 vertex: wgpu::VertexState {
                     module: &rasterize_aabbs_shader,
                     entry_point: Some("vs_main"),
-                    compilation_options: Default::default(),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
                     buffers: &vertex_buffers,
                 },
                 fragment: Some(wgpu::FragmentState {
                     module: &rasterize_aabbs_shader,
                     entry_point: Some("fs_main"),
-                    compilation_options: Default::default(),
-                    targets: &[Some(config.view_formats[0].into())],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(
+                        config
+                            .view_formats
+                            .first()
+                            .copied()
+                            .unwrap_or(config.format)
+                            .into(),
+                    )],
                 }),
                 primitive: wgpu::PrimitiveState {
                     cull_mode: Some(wgpu::Face::Front),
@@ -568,7 +589,7 @@ impl App {
             })
         });
 
-        App {
+        Self {
             player_controller,
 
             last_frame_update: Instant::now(),
@@ -599,7 +620,6 @@ impl App {
             timestamp_readback,
             timestamp_period,
             profile_enabled,
-            stats_enabled,
             profile_accum: ProfileAccum::default(),
             profile_reported_at: None,
 
@@ -620,8 +640,6 @@ impl App {
         self.delta_time = delta;
     }
 
-    pub fn update(&mut self, _event: WindowEvent) {}
-
     pub fn resize(
         &mut self,
         config: &wgpu::SurfaceConfiguration,
@@ -633,6 +651,8 @@ impl App {
         self.depth_texture = create_depth_texture(device, config.width, config.height);
     }
 
+    // Same rationale as `init`: long but tightly coupled render setup.
+    #[allow(clippy::too_many_lines)]
     pub fn render(
         &mut self,
         view: &wgpu::TextureView,
@@ -643,7 +663,7 @@ impl App {
         self.update_delta_time();
 
         let (view_mat, camera_pos) = if self.orbit_enabled {
-            self.orbit_elapsed += self.delta_time;
+            self.orbit_elapsed = self.orbit_elapsed.saturating_add(self.delta_time);
             let orbit_params = crate::player_controller::DEFAULT_ORBIT_PARAMS;
             let (pos, target) = crate::player_controller::orbit_pose(
                 self.orbit_elapsed.as_secs_f32(),
@@ -658,7 +678,7 @@ impl App {
                 log::info!(
                     "Orbit: t={:.1}s az={:.1} deg elev={:.1} deg pos=({:.1},{:.1},{:.1})",
                     secs,
-                    (std::f32::consts::TAU * secs as f32 / orbit_params.az_period)
+                    (std::f32::consts::TAU * u64_to_f32(secs) / orbit_params.az_period)
                         .to_degrees()
                         .rem_euclid(360.0),
                     ((pos.y - target.y) / self.orbit_radius).asin().to_degrees(),
@@ -675,7 +695,7 @@ impl App {
             (view_mat, camera_pos)
         };
 
-        let aspect = self.surface_width as f32 / self.surface_height as f32;
+        let aspect = u32_to_f32(self.surface_width) / u32_to_f32(self.surface_height);
 
         let proj_mat = glam::camera::rh::proj::directx::perspective(
             std::f32::consts::FRAC_PI_4,
@@ -684,7 +704,7 @@ impl App {
             10000.0,
         );
 
-        let view_proj = proj_mat * view_mat;
+        let view_proj = proj_mat.mul_mat4(&view_mat);
         let view_inv = view_mat.inverse();
         let proj_inv = proj_mat.inverse();
 
@@ -694,8 +714,8 @@ impl App {
             proj_inv: proj_inv.to_cols_array_2d(),
             view_proj: view_proj.to_cols_array_2d(),
             viewport_and_heatmap: [
-                self.surface_width as f32,
-                self.surface_height as f32,
+                u32_to_f32(self.surface_width),
+                u32_to_f32(self.surface_height),
                 if self.heatmap { 1.0 } else { 0.0 },
                 0.0,
             ],
@@ -714,28 +734,31 @@ impl App {
         // entirely draw-order dependent. Sort by chunk center projected on the
         // camera forward axis; chunk boxes tile the world exactly, so this
         // yields near-to-far order along every view ray.
-        let half_chunk_world = CHUNK_TEXTURE_SIZE.width as f32 * VOXEL_SCALE * 0.5;
-        let fwd = (view_inv * glam::Vec4::new(0.0, 0.0, -1.0, 0.0)).truncate();
-        let mut order: Vec<usize> = (0..self.instances.len()).collect();
-        order.sort_by(|&a, &b| {
-            let ka = (self.instances[a].position + glam::Vec3::splat(half_chunk_world)
-                - camera_pos)
-                .dot(fwd);
-            let kb = (self.instances[b].position + glam::Vec3::splat(half_chunk_world)
-                - camera_pos)
-                .dot(fwd);
+        let half_chunk_world = CHUNK_SIZE.x * VOXEL_SCALE * 0.5;
+        let fwd = view_inv
+            .mul_vec4(glam::Vec4::new(0.0, 0.0, -1.0, 0.0))
+            .truncate();
+        let mut order: Vec<&Instance> = self.instances.iter().collect();
+        order.sort_by(|a, b| {
+            let ka = glam::Vec3::new(
+                a.position.x + half_chunk_world - camera_pos.x,
+                a.position.y + half_chunk_world - camera_pos.y,
+                a.position.z + half_chunk_world - camera_pos.z,
+            )
+            .dot(fwd);
+            let kb = glam::Vec3::new(
+                b.position.x + half_chunk_world - camera_pos.x,
+                b.position.y + half_chunk_world - camera_pos.y,
+                b.position.z + half_chunk_world - camera_pos.z,
+            )
+            .dot(fwd);
             ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
         });
-        let sorted_raws: Vec<InstanceRaw> =
-            order.iter().map(|&i| self.instances[i].to_raw()).collect();
+        let sorted_raws: Vec<InstanceRaw> = order.iter().map(|i| i.to_raw()).collect();
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&sorted_raws));
 
-        if self.stats_enabled {
-            queue.write_buffer(
-                self.stats_buf.as_ref().unwrap(),
-                0,
-                bytemuck::cast_slice(&[0u32; 4]),
-            );
+        if let Some(stats_buf) = self.stats_buf.as_ref() {
+            queue.write_buffer(stats_buf, 0, bytemuck::cast_slice(&[0u32; 4]));
         }
 
         let mut encoder =
@@ -786,15 +809,19 @@ impl App {
 
             if !self.instances.is_empty() {
                 rpass.insert_debug_marker("Draw!");
-                rpass.draw_indexed(0..INDEX_COUNT as u32, 0, 0..self.instances.len() as u32);
+                rpass.draw_indexed(
+                    0..u32::try_from(INDEX_COUNT).unwrap_or_default(),
+                    0,
+                    0..u32::try_from(self.instances.len()).unwrap_or_default(),
+                );
             }
         }
 
-        if let (Some(ts_buf), Some(ts_readback)) = (
+        if let (Some(query), Some(ts_buf), Some(ts_readback)) = (
+            self.timestamp_query.as_ref(),
             self.timestamp_buf.as_ref(),
             self.timestamp_readback.as_ref(),
         ) {
-            let query = self.timestamp_query.as_ref().unwrap();
             encoder.resolve_query_set(query, 0..2, ts_buf, 0);
             encoder.copy_buffer_to_buffer(ts_buf, 0, ts_readback, 0, 16);
         }
@@ -826,29 +853,43 @@ impl App {
         device.poll(wgpu::PollType::wait_indefinitely()).ok();
 
         {
-            let mapped = ts_readback.slice(..).get_mapped_range().unwrap();
+            let mapped = ts_readback
+                .slice(..)
+                .get_mapped_range()
+                .unwrap_or_else(|_| fatal("timestamp readback buffer is not mapped"));
             let ts: &[u64] = bytemuck::cast_slice(&mapped);
-            let start = ts[0];
-            let end = ts[1];
+            let start = ts.first().copied().unwrap_or_default();
+            let end = ts.get(1).copied().unwrap_or_default();
             if end >= start {
-                let period = self.timestamp_period.max(1.0);
-                self.profile_accum.gpu_ms += (end - start) as f64 * period as f64 / 1e6;
+                let mut gpu_ns = u64_to_f64(end.saturating_sub(start));
+                gpu_ns *= f64::from(self.timestamp_period.max(1.0));
+                gpu_ns /= 1e6;
+                self.profile_accum.gpu_ms += gpu_ns;
             }
             drop(mapped);
             ts_readback.unmap();
         }
 
         if let Some(sr) = stats_readback {
-            let mapped = sr.slice(..).get_mapped_range().unwrap();
+            let mapped = sr
+                .slice(..)
+                .get_mapped_range()
+                .unwrap_or_else(|_| fatal("stats readback buffer is not mapped"));
             let s: &[u32] = bytemuck::cast_slice(&mapped);
-            self.profile_accum.fragments += s[0] as u64;
-            self.profile_accum.cells += s[1] as u64;
-            self.profile_accum.hits += s[2] as u64;
+            let fragments = s.first().copied().unwrap_or_default();
+            let cells = s.get(1).copied().unwrap_or_default();
+            let hits = s.get(2).copied().unwrap_or_default();
+            self.profile_accum.fragments = self
+                .profile_accum
+                .fragments
+                .saturating_add(u64::from(fragments));
+            self.profile_accum.cells = self.profile_accum.cells.saturating_add(u64::from(cells));
+            self.profile_accum.hits = self.profile_accum.hits.saturating_add(u64::from(hits));
             drop(mapped);
             sr.unmap();
         }
 
-        self.profile_accum.frames += 1;
+        self.profile_accum.frames = self.profile_accum.frames.saturating_add(1);
         let now = Instant::now();
         if self
             .profile_reported_at
@@ -864,11 +905,21 @@ impl App {
         if a.frames == 0 {
             return;
         }
-        let pixels = (self.surface_width * self.surface_height) as f64;
-        let frags_per_frame = a.fragments as f64 / a.frames as f64;
-        let cells_per_frame = a.cells as f64 / a.frames as f64;
-        let gpu_ms = a.gpu_ms / a.frames as f64;
-        let hits_per_frame = a.hits as f64 / a.frames as f64;
+        let pixels = f64::from(self.surface_width.saturating_mul(self.surface_height));
+        let frames = f64::from(a.frames);
+        let mut frags_per_frame = u64_to_f64(a.fragments);
+        frags_per_frame /= frames;
+        let mut cells_per_frame = u64_to_f64(a.cells);
+        cells_per_frame /= frames;
+        let mut gpu_ms = a.gpu_ms;
+        gpu_ms /= frames;
+        let mut hits_per_frame = u64_to_f64(a.hits);
+        hits_per_frame /= frames;
+        let mut cells_per_frag = u64_to_f64(a.cells);
+        cells_per_frag /= u64_to_f64(a.fragments.max(1));
+        let mut traffic = cells_per_frame;
+        traffic *= 4.0;
+        traffic /= 1e6;
         log::info!(
             "[profile] {} frames | gpu {:.2} ms | frags/frame {:>9.0} ({:.2}x px) | cells/frame {:>10.0} | cells/frag {:.1} | hits/frame {:>8.0} | {:>7.1} MB/frame texel traffic",
             a.frames,
@@ -876,9 +927,9 @@ impl App {
             frags_per_frame,
             frags_per_frame / pixels,
             cells_per_frame,
-            a.cells as f64 / a.fragments.max(1) as f64,
+            cells_per_frag,
             hits_per_frame,
-            cells_per_frame * 4.0 / 1e6,
+            traffic,
         );
         self.profile_accum = ProfileAccum::default();
     }
