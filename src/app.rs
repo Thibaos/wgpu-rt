@@ -8,6 +8,7 @@ use wgpu::util::DeviceExt;
 use crate::player_controller::PlayerController;
 use crate::render::{
     CameraUniforms, INDEX_COUNT, Instance, InstanceRaw, VOXEL_SCALE, Vertex, create_vertices,
+    rayquery::RayQueryResources,
 };
 use crate::utils::{fatal, i32_to_f32, u32_to_f32, u64_to_f32, u64_to_f64};
 use crate::world::{World, chunk::CHUNK_SIZE, create_palette_buffer};
@@ -46,6 +47,11 @@ pub struct App {
 
     depth_texture: wgpu::Texture,
 
+    // Design A renderer (WGPU_RT_RAYQUERY=1): TLAS of chunk AABBs + compute
+    // ray-query pass. `None` keeps the rasterized chunk-proxy DDA path, which
+    // is the default and remains A/B-able in the bench.
+    rayquery: Option<RayQueryResources>,
+
     // Display traversal cost instead of voxel colors.
     heatmap: bool,
 
@@ -69,6 +75,10 @@ pub struct App {
     orbit_target: glam::Vec3, // app.rs does not import glam types; use the fully-qualified path
     orbit_radius: f32,
     last_orbit_log_secs: u64,
+
+    // WGPU_RT_DUMP: write one raw frame dump (raster surface or ray-query
+    // target) after this many rendered frames.
+    frames_rendered: u64,
 }
 
 // `device.create_texture` is not const-callable; the lint misfires here.
@@ -100,18 +110,36 @@ struct ProfileAccum {
     hits: u64,
 }
 
+/// `WGPU_RT_RAYQUERY=1` selects the Design A renderer (see
+/// advisor-plans/004). The experimental ray-query feature is Vulkan-only, so
+/// it is requested at device creation only when this gate is set.
+fn rayquery_requested() -> bool {
+    std::env::var("WGPU_RT_RAYQUERY").is_ok_and(|v| v == "1")
+}
+
 impl App {
     pub const SRGB: bool = true;
 
     // wgpu::Features bit-ops are not const-stable; the lint misfires here.
     #[allow(clippy::missing_const_for_fn)]
     pub fn required_features() -> wgpu::Features {
-        wgpu::Features::TEXTURE_BINDING_ARRAY
-            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+        let mut features = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        if rayquery_requested() {
+            features |= wgpu::Features::EXPERIMENTAL_RAY_QUERY;
+        }
+        features
     }
 
-    pub const fn optional_features() -> wgpu::Features {
-        wgpu::Features::TIMESTAMP_QUERY
+    // wgpu::Features bit-ops are not const-stable; the lint misfires here.
+    #[allow(clippy::missing_const_for_fn)]
+    pub fn optional_features() -> wgpu::Features {
+        // TIMESTAMP_QUERY_INSIDE_ENCODERS: the Design A ray-query pass
+        // brackets its GPU time with `CommandEncoder::write_timestamp` (the
+        // raster path uses RenderPassTimestampWrites, which needs
+        // TIMESTAMP_QUERY_INSIDE_PASSES). Both are gated behind the adapter
+        // check in the device request.
+        wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS
     }
 
     pub fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
@@ -122,7 +150,28 @@ impl App {
     }
 
     pub fn required_limits() -> wgpu::Limits {
-        wgpu::Limits::default()
+        let limits = wgpu::Limits::default();
+        if rayquery_requested() {
+            // Vulkan's guaranteed minimums for acceleration-structure limits;
+            // requesting them only makes sense with EXPERIMENTAL_RAY_QUERY.
+            limits.using_minimum_supported_acceleration_structure_values()
+        } else {
+            limits
+        }
+    }
+
+    /// Device-side agreement to use experimental features (the ray-query API
+    /// is acknowledged-UB experimental). Must be passed to the device request
+    /// whenever `WGPU_RT_RAYQUERY=1` adds `EXPERIMENTAL_RAY_QUERY` to
+    /// `required_features`.
+    pub fn experimental_features() -> wgpu::ExperimentalFeatures {
+        if rayquery_requested() {
+            // SAFETY: the Design A renderer is behind an env gate; enabling
+            // the experimental ray-query API is the user's explicit opt-in.
+            unsafe { wgpu::ExperimentalFeatures::enabled() }
+        } else {
+            wgpu::ExperimentalFeatures::disabled()
+        }
     }
 
     // The wgpu device/pipeline setup is one tightly-coupled block; splitting it
@@ -317,7 +366,9 @@ impl App {
                 label: Some("camera_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    // COMPUTE added for the Design A ray-query pass, which
+                    // shares this layout and bind group with the raster path.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -402,6 +453,36 @@ impl App {
             entries: &resource_entries,
             label: Some("resource_bind_group"),
         });
+
+        // Design A renderer (WGPU_RT_RAYQUERY=1): one BLAS per chunk (static
+        // world-bounds AABB, never rebuilt on edits) + one TLAS + a compute
+        // ray-query pass. Gated so the default rasterized DDA path stays
+        // untouched and A/B-able in the bench.
+        let rayquery_resources = if rayquery_requested() {
+            Some(RayQueryResources::new(
+                device,
+                queue,
+                &crate::render::rayquery::RayQueryParams {
+                    instances: &instances,
+                    chunk_side_world,
+                    palette_buf: &palette_buf,
+                    texture_view_refs: &texture_view_refs,
+                    bind_group_count,
+                    stats_buf: stats_buf.as_ref(),
+                    stats_enabled,
+                    camera_bind_group_layout: &camera_bind_group_layout,
+                    width,
+                    height,
+                    target_format: config
+                        .view_formats
+                        .first()
+                        .copied()
+                        .unwrap_or(config.format),
+                },
+            ))
+        } else {
+            None
+        };
 
         let rasterize_aabbs_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -613,6 +694,8 @@ impl App {
 
             depth_texture,
 
+            rayquery: rayquery_resources,
+
             stats_buf,
             stats_readback,
             timestamp_query,
@@ -630,6 +713,7 @@ impl App {
             orbit_radius,
             orbit_elapsed: Duration::ZERO,
             last_orbit_log_secs: 0,
+            frames_rendered: 0,
         }
     }
 
@@ -649,6 +733,9 @@ impl App {
         self.surface_width = config.width;
         self.surface_height = config.height;
         self.depth_texture = create_depth_texture(device, config.width, config.height);
+        if let Some(res) = self.rayquery.as_mut() {
+            res.recreate_target(device, config.width, config.height);
+        }
     }
 
     // Same rationale as `init`: long but tightly coupled render setup.
@@ -727,35 +814,38 @@ impl App {
             bytemuck::cast_slice(&[camera_uniforms]),
         );
 
-        // Front-to-back instance ordering. With the frag_depth write removed,
-        // the depth test runs before the fragment shader (hardware early-Z),
-        // but a chunk's fragments are only rejected once a NEARER chunk has
+        // Front-to-back instance ordering (raster path only; the ray-query
+        // pass needs no draw order). With the frag_depth write removed, the
+        // depth test runs before the fragment shader (hardware early-Z), but
+        // a chunk's fragments are only rejected once a NEARER chunk has
         // already written depth for that pixel — so the culling benefit is
-        // entirely draw-order dependent. Sort by chunk center projected on the
-        // camera forward axis; chunk boxes tile the world exactly, so this
-        // yields near-to-far order along every view ray.
-        let half_chunk_world = CHUNK_SIZE.x * VOXEL_SCALE * 0.5;
-        let fwd = view_inv
-            .mul_vec4(glam::Vec4::new(0.0, 0.0, -1.0, 0.0))
-            .truncate();
-        let mut order: Vec<&Instance> = self.instances.iter().collect();
-        order.sort_by(|a, b| {
-            let ka = glam::Vec3::new(
-                a.position.x + half_chunk_world - camera_pos.x,
-                a.position.y + half_chunk_world - camera_pos.y,
-                a.position.z + half_chunk_world - camera_pos.z,
-            )
-            .dot(fwd);
-            let kb = glam::Vec3::new(
-                b.position.x + half_chunk_world - camera_pos.x,
-                b.position.y + half_chunk_world - camera_pos.y,
-                b.position.z + half_chunk_world - camera_pos.z,
-            )
-            .dot(fwd);
-            ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        let sorted_raws: Vec<InstanceRaw> = order.iter().map(|i| i.to_raw()).collect();
-        queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&sorted_raws));
+        // entirely draw-order dependent. Sort by chunk center projected on
+        // the camera forward axis; chunk boxes tile the world exactly, so
+        // this yields near-to-far order along every view ray.
+        if self.rayquery.is_none() {
+            let half_chunk_world = CHUNK_SIZE.x * VOXEL_SCALE * 0.5;
+            let fwd = view_inv
+                .mul_vec4(glam::Vec4::new(0.0, 0.0, -1.0, 0.0))
+                .truncate();
+            let mut order: Vec<&Instance> = self.instances.iter().collect();
+            order.sort_by(|a, b| {
+                let ka = glam::Vec3::new(
+                    a.position.x + half_chunk_world - camera_pos.x,
+                    a.position.y + half_chunk_world - camera_pos.y,
+                    a.position.z + half_chunk_world - camera_pos.z,
+                )
+                .dot(fwd);
+                let kb = glam::Vec3::new(
+                    b.position.x + half_chunk_world - camera_pos.x,
+                    b.position.y + half_chunk_world - camera_pos.y,
+                    b.position.z + half_chunk_world - camera_pos.z,
+                )
+                .dot(fwd);
+                ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let sorted_raws: Vec<InstanceRaw> = order.iter().map(|i| i.to_raw()).collect();
+            queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&sorted_raws));
+        }
 
         if let Some(stats_buf) = self.stats_buf.as_ref() {
             queue.write_buffer(stats_buf, 0, bytemuck::cast_slice(&[0u32; 4]));
@@ -764,7 +854,58 @@ impl App {
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        {
+        if let Some(res) = self.rayquery.as_ref() {
+            // Design A: compute ray-query pass against the chunk TLAS, then a
+            // blit to the surface. GPU time is bracketed with write_timestamp
+            // (the raster path times its render pass with
+            // RenderPassTimestampWrites on the same query set).
+            if let Some(query) = self.timestamp_query.as_ref() {
+                encoder.write_timestamp(query, 0);
+            }
+            {
+                let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+                cpass.push_debug_group("Design A ray query");
+                cpass.set_pipeline(&res.pipeline);
+                cpass.set_bind_group(0, Some(&self.camera_bind_group), &[]);
+                cpass.set_bind_group(1, Some(&res.bind_group), &[]);
+                cpass.set_bind_group(2, Some(&res.out_bind_group), &[]);
+                cpass.dispatch_workgroups(
+                    self.surface_width.div_ceil(8),
+                    self.surface_height.div_ceil(8),
+                    1,
+                );
+                cpass.pop_debug_group();
+            }
+            {
+                let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                rpass.push_debug_group("Blit ray-query target");
+                rpass.set_pipeline(&res.blit_pipeline);
+                rpass.set_bind_group(0, Some(&res.blit_bind_group), &[]);
+                rpass.draw(0..4, 0..1);
+                rpass.pop_debug_group();
+            }
+            if let Some(query) = self.timestamp_query.as_ref() {
+                encoder.write_timestamp(query, 1);
+            }
+        } else {
             let depth_view = self
                 .depth_texture
                 .create_view(&wgpu::TextureViewDescriptor::default());
@@ -836,6 +977,7 @@ impl App {
         if self.profile_enabled {
             self.read_profile(device);
         }
+        self.maybe_dump_frame(view, device, queue);
     }
 
     /// Maps the per-frame readback buffers (blocking Wait poll — this is the
@@ -964,5 +1106,76 @@ impl App {
             return;
         }
         self.player_controller.rotate(delta);
+    }
+
+    /// `WGPU_RT_DUMP=<dir>`: after a warm-up, write one raw frame dump from the
+    /// active renderer (ray-query target or raster surface view). Debug path
+    /// for visual A/B; the raster dump requires `COPY_SRC` on the target
+    /// (bench's offscreen texture has it, the interactive swapchain does not).
+    fn maybe_dump_frame(
+        &mut self,
+        view: &wgpu::TextureView,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(dump_dir) = std::env::var("WGPU_RT_DUMP").ok().filter(|s| !s.is_empty()) else {
+            return;
+        };
+        self.frames_rendered = self.frames_rendered.saturating_add(1);
+        if self.frames_rendered != 40 {
+            return;
+        }
+        let width = self.surface_width;
+        let height = self.surface_height;
+        let bytes_per_row = width.saturating_mul(4);
+        if !bytes_per_row.is_multiple_of(256) {
+            log::warn!("WGPU_RT_DUMP skipped: width {width} needs bytes_per_row % 256 == 0");
+            return;
+        }
+        let path = if self.rayquery.is_some() {
+            std::path::Path::new(&dump_dir).join("dump_rayquery.bgra")
+        } else {
+            std::path::Path::new(&dump_dir).join("dump_raster.bgra")
+        };
+        log::info!("WGPU_RT_DUMP: writing {}", path.display());
+        let buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame_dump_buffer"),
+            size: u64::from(bytes_per_row).saturating_mul(u64::from(height)),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: view.texture(),
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buf,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+        let slice = buf.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).ok();
+        let mapped = slice.get_mapped_range().unwrap_or_else(|e| {
+            crate::utils::fatal(&format!("frame dump buffer is not mapped: {e}"))
+        });
+        std::fs::write(&path, &mapped).unwrap_or_else(|e| {
+            crate::utils::fatal(&format!("failed to write dump {}: {e}", path.display()))
+        });
     }
 }

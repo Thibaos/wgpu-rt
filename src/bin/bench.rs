@@ -82,7 +82,7 @@ fn main() {
         required_features: (app::App::optional_features() & adapter.features())
             | app::App::required_features(),
         required_limits: needed_limits,
-        experimental_features: wgpu::ExperimentalFeatures::disabled(),
+        experimental_features: app::App::experimental_features(),
         memory_hints: wgpu::MemoryHints::MemoryUsage,
         trace: wgpu::Trace::Off,
     }))
@@ -120,7 +120,8 @@ fn main() {
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // COPY_SRC: WGPU_RT_DUMP frame dumps read the raster surface back.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
     let color_view = color.create_view(&wgpu::TextureViewDescriptor::default());

@@ -1,3 +1,5 @@
+pub mod rayquery;
+
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Quat, Vec3};
 
@@ -11,6 +13,19 @@ pub const VOXEL_SCALE: f32 = 0.125;
 pub struct Vertex {
     _pos: [f32; 4],
     _tex_coord: [f32; 2],
+}
+
+/// One chunk-world AABB primitive in the BLAS input buffer (32-byte stride,
+/// matching `GpuAabb` in assets/shaders/rayquery.wgsl). The AABB is the
+/// chunk's full 32 m bounds; TLAS instance `i` owns the primitive at
+/// `i * size_of::<GpuAabb>()`, so the shader recovers the hit chunk's bounds
+/// as `gpu_aabbs[instance_index]`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+pub struct GpuAabb {
+    pub min: [f32; 3],
+    pub max: [f32; 3],
+    pub _pad: [f32; 2],
 }
 
 #[repr(C)]

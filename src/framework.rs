@@ -148,7 +148,7 @@ impl RenderContext {
                 required_features: (App::optional_features() & adapter.features())
                     | App::required_features(),
                 required_limits: needed_limits,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+                experimental_features: App::experimental_features(),
                 memory_hints: wgpu::MemoryHints::MemoryUsage,
                 trace: wgpu::Trace::Off,
             })
