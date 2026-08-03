@@ -26,7 +26,10 @@ honor its STOP conditions, and update your row when done.
 | 016  | Measure the DDA render pass with GPU timestamps, then apply the two highest-leverage shader optimizations | P1 | M | — | DONE (advisor batch 2026-07-31, moved from `advisor-plans/001`): instrumentation rebuilt in-tree (env-gated timestamps + DDA counters) and committed with a headless bench; release: monu1 20-23 ms, bistro_sm 70-89 ms, church 58-105 ms GPU — GPU-bound, latency-bound (400-860M cells/s); Optim. A measured no gain (40.06→39.40/40.41 ms), gated/reverted |
 | 017  | Replace per-proxy fragment DDA with a single cross-chunk fullscreen pass (probe redundancy first, then A/B-gated nearest-wins rewrite) | P1 | L | 016 | BLOCKED (advisor batch 2026-07-31, moved from `advisor-plans/002`): Step-1 probe gate STOPPED the build — invocation_ratio 1.09 ≤ 1.15, overdraw 1.00-1.24x px; rewrite would save <9% of fragment work at MED-HIGH risk; probe reverted; early-Z experiment (frag_depth removal + front-to-back sort) also measured no GPU gain — depth restored; direction set: half-res or compute path → taken by plan 019 |
 | 018  | Depth-exit — terminate the chunk DDA at the previous frame's nearest surface | P1 | M | 016, `1817d7d` | REJECTED (advisor batch 2026-07-31, moved from `advisor-plans/003`): never executed — the fragment path it optimized was retired by plan 019 (Design A, `f014d3b`) |
-| 019  | Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass) | P0 | L | wgpu 30 ray-query/AS | DONE (advisor batch 2026-07-31, moved from `advisor-plans/004`): executed in-tree at `f014d3b`; primary pass 2.4-3.8x faster (monu1 21.0→6.4-8.9 ms, bistro_sm 60.7→16.7-17.2 ms GPU); basis for plans 014/015 |
+| 019  | Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass) | P0 | L | wgpu 30 ray-query/AS | DONE (advisor batch 2026-07-31, moved from `advisor-plans/004`): executed in-tree at `f014d3b`; primary pass 2.4-3.8x faster (monu1 21.0→6.4-8.9 ms, bistro_sm 60.7→16.7-17.2 ms GPU); basis for plans 014/015 — **measured on clipped bistro/church scenes, see 020** |
+| 020  | Stopgap: fix silent world clipping — grid-centered loading, CHUNKS_Y=8, drop diagnostics | P1 | M | — | TODO — planned 2026-08-03 from the audit finding that every model >256 voxels is silently truncated (bistro_sm 5/64 chunks, church 5/64, sponza 13/64); also fixes a latent chunk_y decode bug the CHUNKS_Y=1 grid hid; superseded structurally by 015 |
+| 021  | Refresh plan 015 — drift check, Current state, Stage-5 notes (post-020/022) | P1 | S | — | TODO — planned 2026-08-03; 015's drift check still expects the uncommitted kickoff state (HEAD `f014d3b`) and will STOP a dispatched executor; run after 020+022 ideally |
+| 022  | Restore the traversal heatmap — per-pixel DDA-work coloring in both renderers | P2 | S | — | TODO — planned 2026-08-03; `H` toggle + uniform upload exist but no shader reads the flag (dead since a shader rewrite); adds WGPU_RT_HEATMAP env + dump-diff verification |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -41,6 +44,18 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 ## Dependency notes
 
+- 020 (world-clipping stopgap) has no plan dependency; it must land before
+  plan 015's Stage-5 measurement sweep so the sweep runs on unclipped scenes.
+  It changes files plan 015's "Current state" describes (`chunk.rs` grid
+  constants, `mod.rs` into_chunks/split_chunks, `loader.rs` centering) —
+  plan 021 absorbs that into 015's drift check.
+- 022 (heatmap) has no plan dependency; it changes both shaders and
+  `src/app.rs`, which plan 015's "Current state" also describes — plan 021
+  notes it in 015's refresh.
+- 021 (refresh 015) is best run after 020 and 022 (its Current-state
+  bullets should quote the post-020/022 live files), but its rewritten drift
+  check re-verifies at dispatch either way. Plan 015 is dispatchable only
+  after 021 lands.
 - 001 and 002 were independent — they touch different files (`src/app.rs` vs `src/framework.rs`).
 - 008 and 009 are independent small robustness fixes and can run before plan 010.
 - 010 depends on 008 and 009 because it changes the same framework/app render path
@@ -122,14 +137,45 @@ Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJE
 
 | # | Finding | Category | Priority |
 |---|---------|----------|----------|
-| 3  | Thin test coverage: player controller, framework, loader, render path untested (22 tests exist; see reconcile notes) | Tests | P2 |
-| 4  | `tree64` dead dependency still listed in `Cargo.toml` (unused in code) — removal scheduled in plan 015 | Dependencies | P2 |
+| 3  | Thin test coverage: player controller, framework, render path untested (loader/world now covered by plan 020's tests) | Tests | P2 |
 | 5  | No CI, no fmt/clippy in automation | DX | P2 |
 | 6  | No README | Docs | P3 |
+| 10 | `cargo clippy --all-targets -- -D warnings` is RED on the integration tests (72 in `hierarchical_mip_dda.rs`, 9 in `shader_validate.rs` — missing `#[allow]` blocks; lib/bin clean). Plans gate on this command; reconcile claims of "clippy clean" are now false | Tests/DX | P1 |
+| 11 | Loader/chunk-split math had zero tests (COR-01 shipped because of it) — plan 020 adds the first ones; player_controller `fly_movement` still untested | Tests | P2 |
+| 12 | No cargo-audit coverage; not installed in this environment | Dependencies | P3 |
 
 Resolved since the last pass: #7 (unused shader files — `assets/shaders/` holds only
-`chunk.wgsl`), #8 (build.rs — gone; shader loaded via `include_str!` at
-`src/app.rs:298`).
+`chunk.wgsl` and `rayquery.wgsl`), #8 (build.rs — gone; shader loaded via
+`include_str!` at `src/app.rs:298`), #4 (`tree64` fully removed at the
+2026-08-02 kickoff — 0 matches in `Cargo.toml`/`Cargo.lock`; row retired).
+
+## Reconcile notes (2026-08-03, third pass)
+
+- **Verification baseline on HEAD `bde0db4`** (verified this pass): `cargo
+  check` clean; `cargo test` 30/30 (14 unit + 12 mip-DDA + 4 shader_validate);
+  `cargo fmt --check` clean; **`cargo clippy --all-targets -- -D warnings`
+  FAILS** — 72 errors in `tests/hierarchical_mip_dda.rs`, 9 in
+  `tests/shader_validate.rs` (indexing_slicing / as_conversions /
+  arithmetic_side_effects / unwrap / expect / panic; the files lack the
+  `#[allow]` blocks in-crate test modules carry). The "clippy clean" claims
+  in the 011/012 reconcile notes no longer hold — recorded as finding #7.
+  Plan-020/022's lint gate is deliberately `cargo clippy` (lib+bin), not
+  `--all-targets`, for this reason.
+- **COR-01 verified live**: `WGPU_RT_WORLD=assets/models/bistro_sm.vox
+  cargo run --bin bench -- 2` loads 13.8M voxels spanning world x∈[-836,1093],
+  y∈[-895,1152], z∈[-155,412] but only 5/64 chunks survive (`into_chunks`
+  silently drops out-of-grid voxels; loader centers at the single-chunk
+  center 128, not the grid center 1024; grid is one chunk tall). church 5/64,
+  sponza 13/64, monu1 1/64 (fits). Plans 016/019's bistro/church numbers
+  were measured on fragments. → plan 020.
+- **Plan 015 drift**: the plan's drift check expects HEAD `f014d3b` with the
+  kickoff edits uncommitted and `tree64` at `Cargo.toml:15`; actual state is
+  HEAD `bde0db4` (kickoff committed), clean tree, tree64 gone → plan 021.
+- **Heatmap dead**: `viewport_and_heatmap` uploaded per frame but read by no
+  shader; `H` is a no-op in both renderers → plan 022.
+- **Adapter facts** (for plan 020/015 decisions): NVIDIA RTX 3070 (Vulkan),
+  `max_binding_array_elements_per_shader_stage: 1048576` — CHUNKS_Y=8 (512
+  chunks) is safe here.
 
 ## Additional plan notes
 
