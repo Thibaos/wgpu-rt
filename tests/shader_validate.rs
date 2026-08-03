@@ -119,3 +119,17 @@ fn minimal_rayquery_generate_variants() {
         println!("{name}: {result:?}");
     }
 }
+
+#[test]
+fn heatmap_flag_is_consumed_by_both_shaders() {
+    for name in ["chunk.wgsl", "rayquery.wgsl"] {
+        let src = std::fs::read_to_string(shader_path(name));
+        let Some(source) = src.as_ref().ok() else {
+            continue; // shader missing: the parse tests above will fail loudly
+        };
+        assert!(
+            source.contains("viewport_and_heatmap.z"),
+            "{name} must read the heatmap flag"
+        );
+    }
+}
