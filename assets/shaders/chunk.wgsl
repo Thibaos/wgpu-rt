@@ -74,6 +74,7 @@ const INF: f32 = 1.0e30;
 const ROOT_CELL_CAP: i32 = 24;      // samples per root frame (diagonal of 8^3 is ~14, headroom)
 const REFINEMENT_CELL_CAP: i32 = 8; // samples per child frame (2^3 grid: max 4 cells on a ray)
 const GLOBAL_CELL_CAP: i32 = 2048;  // total positive-width samples per fragment
+const HEATMAP_CELL_SCALE: f32 = 64.0; // heatmap cheap/expensive knee (~one 8x8 root cell row)
 // Static outer traversal-loop bound. Derivation: each iteration either
 // samples one positive-width cell (global cap 2048 samples; the 2049th
 // discards), pops a frame, or skips a zero-width cell. Pops are bounded by
@@ -361,6 +362,13 @@ fn fs_main(in: VertexOutput) -> FragmentOutput {
                 let hit_world = origin + dir * top.t;
                 let clip = camera.view_proj * vec4<f32>(hit_world, 1.0);
                 // %%STATS_HIT%%
+                if (camera.viewport_and_heatmap.z > 0.5) {
+                    let heat = clamp(f32(processed_cells) / HEATMAP_CELL_SCALE, 0.0, 1.0);
+                    return FragmentOutput(
+                        vec4<f32>(mix(vec3<f32>(0.05, 0.0, 0.2), vec3<f32>(1.0, 0.3, 0.0), heat), 1.0),
+                        clip.z / clip.w,
+                    );
+                }
                 return FragmentOutput(palette[mat], clip.z / clip.w);
             }
             frames[top_idx] = advance_frame(top, dir);

@@ -189,6 +189,7 @@ impl App {
 
         let profile_enabled = std::env::var("WGPU_RT_PROFILE").is_ok_and(|v| v == "1");
         let stats_enabled = std::env::var("WGPU_RT_STATS").is_ok_and(|v| v == "1");
+        let heatmap_enabled = std::env::var("WGPU_RT_HEATMAP").is_ok_and(|v| v == "1");
 
         let player_controller = PlayerController::default();
 
@@ -706,7 +707,7 @@ impl App {
             profile_accum: ProfileAccum::default(),
             profile_reported_at: None,
 
-            heatmap: false,
+            heatmap: heatmap_enabled,
 
             orbit_enabled,
             orbit_target,

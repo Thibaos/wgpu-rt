@@ -32,6 +32,7 @@ struct GpuAabb {
 struct HitResult {
     t: f32,
     mat: u32,
+    cells: u32,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -67,6 +68,7 @@ const ROOT_CELL_CAP: i32 = 24;
 const REFINEMENT_CELL_CAP: i32 = 8;
 const GLOBAL_CELL_CAP: i32 = 2048;
 const TRAVERSAL_BOUND: i32 = 16384;
+const HEATMAP_CELL_SCALE: f32 = 64.0; // heatmap cheap/expensive knee (~one 8x8 root cell row)
 
 struct TraversalFrame {
     mip: u32,
@@ -259,6 +261,7 @@ fn dda_chunk(
                 // %%STATS_HIT%%
                 (*out).t = top.t;
                 (*out).mat = mat;
+                (*out).cells = u32(processed_cells);
                 return true;
             }
             frames[top_idx] = advance_frame(top, dir);
@@ -336,7 +339,15 @@ fn rq_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let committed = rayQueryGetCommittedIntersection(&rq);
     if (committed.kind == RAY_QUERY_INTERSECTION_GENERATED && found) {
-        color = palette[res.mat];
+        if (camera.viewport_and_heatmap.z > 0.5) {
+            let heat = clamp(f32(res.cells) / HEATMAP_CELL_SCALE, 0.0, 1.0);
+            color = vec4<f32>(
+                mix(vec3<f32>(0.05, 0.0, 0.2), vec3<f32>(1.0, 0.3, 0.0), heat),
+                1.0,
+            );
+        } else {
+            color = palette[res.mat];
+        }
     }
 
     textureStore(out_color, gid.xy, color);
