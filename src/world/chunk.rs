@@ -21,12 +21,16 @@ pub const CHUNK_SIZE: Vec3 = Vec3 {
     z: CHUNK_TEXTURE_SIZE.depth_or_array_layers as f32,
 };
 
+// Vertical extent matches x/z so the 2048^3 world fits tall scenes (bistro_sm
+// is 2047 voxels tall). 512 chunk textures fit the binding array on this
+// adapter (limit 1,048,576); adapters with lower limits fail loudly at
+// `App::init`, never silently. Plan 015 retires the fixed grid entirely.
 pub const CHUNKS_X: u32 = 8;
-pub const CHUNKS_Y: u32 = 1;
+pub const CHUNKS_Y: u32 = 8;
 pub const CHUNKS_Z: u32 = 8;
 
 pub const CHUNKS_X_INT: i32 = 8;
-pub const CHUNKS_Y_INT: i32 = 1;
+pub const CHUNKS_Y_INT: i32 = 8;
 pub const CHUNKS_Z_INT: i32 = 8;
 
 pub const TOTAL_CHUNKS: u32 = CHUNKS_X * CHUNKS_Y * CHUNKS_Z;

@@ -5,7 +5,10 @@ use glam::{IVec3, Mat4, UVec3, Vec3A};
 use rayon::prelude::*;
 
 use crate::utils::{f32_to_i16, f32_to_i32, i32_to_f32, u32_to_f32};
-use crate::world::{VoxelWorldData, World, chunk::CHUNK_TEXTURE_SIZE};
+use crate::world::{
+    VoxelWorldData, World,
+    chunk::{CHUNK_TEXTURE_SIZE, CHUNKS_X_INT, CHUNKS_Y_INT, CHUNKS_Z_INT},
+};
 
 struct ModelInstance<'a> {
     transform: Mat4,
@@ -29,11 +32,14 @@ impl SceneGraphLoader {
     }
 
     fn center_world(voxels: VoxelWorldData) -> ([i32; 3], VoxelWorldData) {
+        // Anchor scenes on the center of the chunk grid (not the center of a
+        // single chunk): world voxels land in 0..grid_side per axis instead of
+        // silently clipping against one 256^3 chunk.
+        let half_side = i32::try_from(CHUNK_TEXTURE_SIZE.width).unwrap_or_default();
         let (w_x, w_y, w_z) = (
-            i32::try_from(CHUNK_TEXTURE_SIZE.width.div_euclid(2)).unwrap_or_default(),
-            i32::try_from(CHUNK_TEXTURE_SIZE.height.div_euclid(2)).unwrap_or_default(),
-            i32::try_from(CHUNK_TEXTURE_SIZE.depth_or_array_layers.div_euclid(2))
-                .unwrap_or_default(),
+            CHUNKS_X_INT.saturating_mul(half_side).div_euclid(2),
+            CHUNKS_Y_INT.saturating_mul(half_side).div_euclid(2),
+            CHUNKS_Z_INT.saturating_mul(half_side).div_euclid(2),
         );
 
         if voxels.is_empty() {
@@ -61,15 +67,19 @@ impl SceneGraphLoader {
         cz += f32::from(max.2);
         cz *= 0.5;
 
+        // Floor (not round-half-away): an exactly grid-tall scene whose
+        // center is -0.5 would otherwise get offset 1025 and drop its top
+        // row on the grid's exclusive upper bound (world 2048). Floor keeps
+        // every scene of extent <= grid_side-1 fully inside 0..grid_side.
         let mut ox = i32_to_f32(w_x);
         ox -= cx;
-        let ox = f32_to_i32(ox.round());
+        let ox = f32_to_i32(ox.floor());
         let mut oy = i32_to_f32(w_y);
         oy -= cy;
-        let oy = f32_to_i32(oy.round());
+        let oy = f32_to_i32(oy.floor());
         let mut oz = i32_to_f32(w_z);
         oz -= cz;
-        let oz = f32_to_i32(oz.round());
+        let oz = f32_to_i32(oz.floor());
 
         log::info!(
             "Scene bounds: ({}, {}, {}) → ({}, {}, {}), offset: ({}, {}, {})",
@@ -357,5 +367,84 @@ impl SceneGraphLoader {
         );
 
         result
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wide_tall_scene_survives_center_and_split() {
+        let mut voxels = VoxelWorldData::new();
+        // Sparse coverage of the full ±800 x, ±600 y, ±300 z extent.
+        for x in (-800i16..=800i16).step_by(200) {
+            for y in (-600i16..=600i16).step_by(200) {
+                for z in (-300i16..=300i16).step_by(100) {
+                    voxels.insert((x, y, z), 1);
+                }
+            }
+        }
+        // A dense block inside the extent.
+        for x in 0i16..16 {
+            for y in 0i16..16 {
+                for z in 0i16..16 {
+                    voxels.insert((x, y, z), 2);
+                }
+            }
+        }
+
+        let (offset, voxels) = SceneGraphLoader::center_world(voxels);
+        let world = World {
+            voxels,
+            palette: [[0; 4]; 256],
+            offset,
+        };
+
+        // Scene bounds are symmetric around the origin, so the grid-centered
+        // anchor lands the offset at exactly the 2048/2 = 1024 center.
+        assert_eq!(offset, [1024, 1024, 1024]);
+        let (chunks, dropped) = world.split_chunks();
+        assert_eq!(dropped, 0);
+        assert!(chunks.iter().filter(|chunk| !chunk.is_empty()).count() > 1);
+    }
+
+    #[test]
+    fn exact_grid_tall_scene_fits_without_drops() {
+        // Regression: a scene exactly as tall as the grid (2048 voxels) must
+        // not lose its top row to offset rounding. round-half-away-from-zero
+        // gives offset 1025 for a center of -0.5, putting y=1023 at world-y
+        // 2048 (the grid's exclusive upper bound) -> 1 dropped voxel. The
+        // floor offset keeps world y in [0, 2047].
+        let mut voxels = VoxelWorldData::new();
+        for y in -1024i16..=1023 {
+            voxels.insert((0, y, 0), 1);
+        }
+
+        let (offset, voxels) = SceneGraphLoader::center_world(voxels);
+        let world = World {
+            voxels,
+            palette: [[0; 4]; 256],
+            offset,
+        };
+        let (chunks, dropped) = world.split_chunks();
+        assert_eq!(dropped, 0);
+        assert_eq!(
+            offset,
+            [1024, 1024, 1024],
+            "floor offset must keep the 2048-tall column inside 0..2048"
+        );
+        assert!(chunks.iter().any(|chunk| !chunk.is_empty()));
     }
 }

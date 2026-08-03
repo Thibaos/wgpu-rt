@@ -7,7 +7,8 @@ pub mod loader;
 use wgpu::util::DeviceExt;
 
 use crate::world::chunk::{
-    CHUNKS_X, CHUNKS_X_INT, CHUNKS_Y, CHUNKS_Y_INT, CHUNKS_Z_INT, Chunk, TOTAL_CHUNKS_INT,
+    CHUNK_TEXTURE_SIZE, CHUNKS_X, CHUNKS_X_INT, CHUNKS_Y, CHUNKS_Y_INT, CHUNKS_Z_INT, Chunk,
+    TOTAL_CHUNKS_INT,
 };
 use crate::world::loader::SceneGraphLoader;
 
@@ -52,20 +53,57 @@ impl World {
     }
 
     pub fn into_chunks(self) -> Vec<Chunk> {
+        self.split_chunks().0
+    }
+
+    /// Splits the voxel map into the fixed grid of chunks.
+    ///
+    /// Returns the chunks and the number of voxels that fell outside the
+    /// grid (world-space clip). Logs a warning when anything is dropped.
+    pub fn split_chunks(self) -> (Vec<Chunk>, u64) {
         let mut chunks: Vec<Chunk> = (0..TOTAL_CHUNKS_INT)
             .map(|i| {
                 let chunk_x = i.rem_euclid(CHUNKS_X_INT);
+                let chunk_y = i.div_euclid(CHUNKS_X_INT).rem_euclid(CHUNKS_Y_INT);
                 let chunk_z = i.div_euclid(CHUNKS_X_INT * CHUNKS_Y_INT);
-                Chunk::new(glam::IVec3::new(chunk_x, 0, chunk_z))
+                Chunk::new(glam::IVec3::new(chunk_x, chunk_y, chunk_z))
             })
             .collect();
 
         let chunk_side: i32 = 256;
 
+        let total_voxels = u64::try_from(self.voxels.len()).unwrap_or_default();
+
+        let mut dropped: u64 = 0;
+        let mut seeded = false;
+        let mut x_min = 0;
+        let mut x_max = 0;
+        let mut y_min = 0;
+        let mut y_max = 0;
+        let mut z_min = 0;
+        let mut z_max = 0;
+
         for ((x, y, z), material) in self.voxels {
             let wx = i32::from(x).saturating_add(self.offset[0]);
             let wy = i32::from(y).saturating_add(self.offset[1]);
             let wz = i32::from(z).saturating_add(self.offset[2]);
+
+            if seeded {
+                x_min = x_min.min(wx);
+                x_max = x_max.max(wx);
+                y_min = y_min.min(wy);
+                y_max = y_max.max(wy);
+                z_min = z_min.min(wz);
+                z_max = z_max.max(wz);
+            } else {
+                seeded = true;
+                x_min = wx;
+                x_max = wx;
+                y_min = wy;
+                y_max = wy;
+                z_min = wz;
+                z_max = wz;
+            }
 
             let chunk_x = wx.div_euclid(chunk_side);
             let chunk_y = wy.div_euclid(chunk_side);
@@ -82,6 +120,7 @@ impl World {
                 || chunk_y >= CHUNKS_Y_INT
                 || chunk_z >= CHUNKS_Z_INT
             {
+                dropped = dropped.saturating_add(1);
                 continue;
             }
 
@@ -100,7 +139,17 @@ impl World {
             chunk.insert((local_x, local_y, local_z), material);
         }
 
-        chunks
+        if dropped > 0 {
+            let grid_side = CHUNKS_X_INT
+                .saturating_mul(i32::try_from(CHUNK_TEXTURE_SIZE.width).unwrap_or_default());
+            log::warn!(
+                "Chunk split: dropped {dropped}/{total_voxels} voxels outside the grid \
+                 (world x [{x_min},{x_max}] y [{y_min},{y_max}] z [{z_min},{z_max}]; \
+                 grid 0..{grid_side} per axis)",
+            );
+        }
+
+        (chunks, dropped)
     }
 }
 
@@ -120,4 +169,107 @@ pub fn create_palette_buffer(device: &wgpu::Device, palette: &[[u8; 4]; 256]) ->
         contents: bytemuck::cast_slice(&float_palette),
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
     })
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::unwrap_used,
+    clippy::expect_used
+)]
+mod tests {
+    use super::*;
+
+    fn world_with(voxels: VoxelWorldData) -> World {
+        World {
+            voxels,
+            palette: [[0; 4]; 256],
+            offset: [0, 0, 0],
+        }
+    }
+
+    /// Finds the grid chunk whose flat buffer holds the given local voxel.
+    fn chunk_holding<'a>(chunks: &'a [Chunk], local: (u8, u8, u8)) -> Option<&'a Chunk> {
+        chunks.iter().find(|chunk| {
+            if chunk.is_empty() {
+                return false;
+            }
+            let bytes = chunk.to_bytes();
+            let size = usize::try_from(CHUNK_TEXTURE_SIZE.width).unwrap_or_default();
+            let idx =
+                (usize::from(local.2) * size + usize::from(local.1)) * size + usize::from(local.0);
+            bytes.get(idx).copied().unwrap_or_default() != 0
+        })
+    }
+
+    #[test]
+    fn voxels_in_different_y_chunks_land_in_correct_grid_positions() {
+        let mut voxels = VoxelWorldData::new();
+        voxels.insert((0, 0, 0), 1);
+        voxels.insert((0, 300, 0), 1);
+        voxels.insert((0, 511, 0), 1);
+        let (chunks, dropped) = world_with(voxels).split_chunks();
+
+        assert_eq!(dropped, 0);
+        assert_eq!(
+            chunk_holding(&chunks, (0, 0, 0)).map(Chunk::grid_position),
+            Some(glam::IVec3::new(0, 0, 0))
+        );
+        // World y 300 and 511 both live in chunk y=1 (locals 44 and 255).
+        assert_eq!(
+            chunk_holding(&chunks, (0, 44, 0)).map(Chunk::grid_position),
+            Some(glam::IVec3::new(0, 1, 0))
+        );
+        assert_eq!(
+            chunk_holding(&chunks, (0, 255, 0)).map(Chunk::grid_position),
+            Some(glam::IVec3::new(0, 1, 0))
+        );
+    }
+
+    #[test]
+    fn voxels_outside_grid_are_dropped_and_counted() {
+        let mut voxels = VoxelWorldData::new();
+        voxels.insert((10_000, 0, 0), 1);
+        voxels.insert((0, -5, 0), 1);
+        voxels.insert((10, 10, 10), 1);
+        let (chunks, dropped) = world_with(voxels).split_chunks();
+
+        assert_eq!(dropped, 2);
+        let non_empty: Vec<glam::IVec3> = chunks
+            .iter()
+            .filter(|chunk| !chunk.is_empty())
+            .map(Chunk::grid_position)
+            .collect();
+        assert_eq!(non_empty, vec![glam::IVec3::new(0, 0, 0)]);
+    }
+
+    #[test]
+    fn index_decode_roundtrips_for_all_axes() {
+        let mut voxels = VoxelWorldData::new();
+        voxels.insert((256, 300, 512), 1);
+        voxels.insert((511, 2047, 2047), 1);
+        voxels.insert((0, 0, 0), 1);
+        let (chunks, dropped) = world_with(voxels).split_chunks();
+
+        assert_eq!(dropped, 0);
+        // (world voxel, expected local coords, expected grid position)
+        let cases = [
+            ((256, 300, 512), (0, 44, 0), (1, 1, 2)),
+            ((511, 2047, 2047), (255, 255, 255), (1, 7, 7)),
+            ((0, 0, 0), (0, 0, 0), (0, 0, 0)),
+        ];
+        for (_world, local, expected) in cases {
+            let found = chunk_holding(&chunks, local).expect("voxel should be placed in a chunk");
+            assert_eq!(
+                found.grid_position(),
+                glam::IVec3::new(expected.0, expected.1, expected.2)
+            );
+        }
+    }
 }
