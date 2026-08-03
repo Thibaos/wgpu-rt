@@ -7,19 +7,25 @@
 > so SKIP any instruction to update `plans/README.md`; the reviewer updates it.
 >
 > **Drift check (run first)**:
-> `git status --short` — expected: HEAD `f014d3b`; the plan-015 kickoff edits
-> present and uncommitted (Tree64 cleanup in `CONTEXT.md`, `docs/research-*.md`,
-> `plans/README.md`; the `docs/adr/` series deleted; `Cargo.toml`/`Cargo.lock`
-> with the `tree64` dep removed; untracked `plans/014-*.md` and this file),
-> plus the pre-existing `M src/render/rayquery.rs`. Then confirm the
-> "Current state" excerpts below still match the live files. On any mismatch,
-> STOP and report the exact changed path and difference.
+> `git status --short -- src/` — expected: empty (no uncommitted source
+> changes; untracked/modified files under `plans/` are expected and
+> fine). HEAD must be `bde0db4` or later.
+> The kickoff edits are committed: `docs/adr/` is deleted and `tree64` is
+> absent from `Cargo.toml`/`Cargo.lock`.
+> Plans 020 (grid-centered loading, CHUNKS_Y=8, drop diagnostics) and
+> 022 (heatmap wiring, WGPU_RT_HEATMAP) have landed — executed 2026-08-03,
+> commits `d3304c2` / `f90cb7f` (see plan 021) — so verify every "Current
+> state" excerpt below against the live files before starting (grep
+> CHUNKS_Y in src/world/chunk.rs, split_chunks in src/world/mod.rs,
+> viewport_and_heatmap.z in assets/shaders/). On any mismatch, STOP and
+> report the exact changed path and difference.
 
 ## Status
 
 - **Priority:** P0
 - **Effort:** XL — world/chunk data layer rewrite, flat-DDA shader, renderer consolidation (raster retirement), test rewrite, docs/ADR, measurement stage
 - **Risk:** HIGH — touches every render-related module; the ray-query path is experimental (`EXPERIMENTAL_RAY_QUERY`, Vulkan) and becomes the **only** path; BLAS primitive count grows to 10⁴–10⁵ (build/traverse cost must be measured); strict clippy (pedantic+nursery deny) across a large diff
+- **Drift:** plans 020 (`d3304c2`: grid-centered loading, CHUNKS_Y=8, drop diagnostics) and 022 (`f90cb7f`: heatmap reads in both shaders, WGPU_RT_HEATMAP) changed the world/chunk layer and shaders after this plan was authored — re-verify every "Current state" excerpt at dispatch (the drift check above covers this)
 - **Depends on:** plan 012 orbit camera (DONE at `b0f332c`), plan 019 Design A ray-query renderer (DONE at `f014d3b`)
 - **Category:** architecture / perf (primary pass)
 - **Planned at:** 2026-08-02, continuation of the grill session on `docs/research-teardown-hardware-ray-tracing.md` and the no-3D-textures direction
@@ -84,11 +90,13 @@ one shader, no textures, no mips, fewer experimental features.
 ## Current state (must match; drift check)
 
 - `src/world/chunk.rs`: `CHUNK_TEXTURE_SIZE` = 256³, `CHUNK_SIZE` = 256,
-  `CHUNKS_X/Y/Z` = 8×1×8 fixed grid, `to_mip_bytes`/`downsample_occupancy`
+  `CHUNKS_X/Y/Z` = 8×8×8 fixed grid (post-020), `to_mip_bytes`/`downsample_occupancy`
   (9 mips), `create_texture` (R8Uint D3 texture + per-mip `write_texture`).
-- `src/world/mod.rs`: `MIP_LEVELS = 9`; `World::into_chunks` fills the fixed
-  grid from the voxel HashMap (`div_euclid(chunk_side)` with `chunk_side:
-  i32 = 256`); `create_palette_buffer` stays.
+- `src/world/mod.rs`: `MIP_LEVELS = 9`; `World::into_chunks` delegates to
+  `split_chunks()` (post-020), which fills the fixed grid from the voxel
+  HashMap (`div_euclid(chunk_side)` with `chunk_side: i32 = 256`) and
+  returns `(Vec<Chunk>, u64)` — the u64 counts and logs dropped voxels;
+  `create_palette_buffer` stays.
 - `src/render/rayquery.rs`: `RayQueryParams { instances, chunk_side_world,
   palette_buf, texture_view_refs, bind_group_count, stats_buf, stats_enabled,
   camera_bind_group_layout, width, height, target_format }`; group(1)
@@ -99,6 +107,9 @@ one shader, no textures, no mips, fewer experimental features.
   (six-frame `array<TraversalFrame, 6>` stack, `ROOT_MIP = 5`,
   `textureLoad(voxel_textures[chunk_index], coord, top.mip)`,
   caps 24/8/2048/16384), `rayQueryGenerateIntersection` on mip-0 hit, blit.
+  Post-022: `HitResult` carries `cells: u32` and both shaders read
+  `camera.viewport_and_heatmap.z` to colorize by DDA work (`WGPU_RT_HEATMAP=1`
+  enables it at startup) — Stage 2's flat-DDA port must preserve that read.
 - `src/app.rs`: raster path is the default (`WGPU_RT_RAYQUERY=1` swaps in
   Design A); raster uses `rasterize_aabbs_pipeline`, a depth texture,
   front-to-back instance sort, and a render-pass timestamp query; `WGPU_RT_DUMP`
@@ -106,7 +117,9 @@ one shader, no textures, no mips, fewer experimental features.
 - `tests/hierarchical_mip_dda.rs`: CPU reference + oracle for the hierarchical
   mip DDA (levels 0..=5). `tests/shader_validate.rs`: naga-validates
   `chunk.wgsl` and `rayquery.wgsl`.
-- `Cargo.toml:15`: `tree64 = { git = ... }` — dead (no `use tree64` in `src/`).
+- `tree64` is fully removed (0 matches in `Cargo.toml` and `Cargo.lock`) —
+  already handled at kickoff; Stage 3's dependency step is now a
+  verify-absent step.
 
 ## Design
 
@@ -139,8 +152,9 @@ one shader, no textures, no mips, fewer experimental features.
   `pool_word = id * 128 + local_index / 4`).
 
 **`src/world/loader.rs`** — minimal: `center_world` currently anchors on the
-256-grid center; re-anchor on the voxel-bounds midpoint (offset semantics
-unchanged). Update the `CHUNK_TEXTURE_SIZE` import accordingly.
+  grid center (post-020; previously the single-chunk 256³ center);
+  re-anchor on the voxel-bounds midpoint (offset semantics unchanged).
+  Update the `CHUNK_TEXTURE_SIZE` import accordingly.
 
 **`src/render/mod.rs`** — keep `GpuAabb` (unchanged 32 B layout). Delete the
 raster-only types: `Vertex`, `INDEX_COUNT`, `InstanceRaw`, and the old
@@ -213,8 +227,8 @@ naga-validate both stats=0 and stats=1 builds. `cargo check` clean.
   occupied voxel along the ray). Fixtures: single voxel, full 8³, sparse
   random fills, camera-inside, negative-direction boundary correction, axis
   ties. Assert `(t, mat)` equality within the old `T_TOLERANCE`.
-- **`Cargo.toml`**: remove the `tree64` dependency; regenerate `Cargo.lock`
-  (plain `cargo check` update).
+- **`Cargo.toml`**: `tree64` is already removed (kickoff). Run
+  `cargo check`; regenerate `Cargo.lock` only if cargo reports it dirty.
 - **`src/bin/bench.rs`**: refresh the header comment (raster references);
   no behavior change. `src/framework.rs` / `src/player_controller.rs` /
   `src/main.rs` unchanged.
@@ -255,6 +269,12 @@ plans/README's historical rows and this plan's kickoff notes.
   (`WGPU_RT_PROFILE=1 WGPU_RT_STATS=1`). Record per cell: cells/frame,
   cells/ray, GPU ms, BLAS+TLAS build ms, pool bytes.
 - Default stays 8³ unless data contradicts Teardown's 8³ (record the choice).
+- Note (post-020): these scenes are **unclipped** — bistro_sm now spans
+  the full 2048³ world (~91 chunks) and church ~111. The historical 016/019
+  numbers were measured on clipped fragments (5-13 chunks) and are NOT a
+  valid baseline for this sweep — record fresh pre-rewrite numbers on the
+  full scenes instead. The targets below are absolute thresholds for the
+  unclipped scene, not regression gates against 016/019.
 - Stretch targets (data-gated, not hard gates): bistro_sm outside orbit
   **< 6 ms GPU @ 1080p**; monu1 **< 3 ms**; **avg cells/ray < 5**.
 

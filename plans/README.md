@@ -27,9 +27,9 @@ honor its STOP conditions, and update your row when done.
 | 017  | Replace per-proxy fragment DDA with a single cross-chunk fullscreen pass (probe redundancy first, then A/B-gated nearest-wins rewrite) | P1 | L | 016 | BLOCKED (advisor batch 2026-07-31, moved from `advisor-plans/002`): Step-1 probe gate STOPPED the build — invocation_ratio 1.09 ≤ 1.15, overdraw 1.00-1.24x px; rewrite would save <9% of fragment work at MED-HIGH risk; probe reverted; early-Z experiment (frag_depth removal + front-to-back sort) also measured no GPU gain — depth restored; direction set: half-res or compute path → taken by plan 019 |
 | 018  | Depth-exit — terminate the chunk DDA at the previous frame's nearest surface | P1 | M | 016, `1817d7d` | REJECTED (advisor batch 2026-07-31, moved from `advisor-plans/003`): never executed — the fragment path it optimized was retired by plan 019 (Design A, `f014d3b`) |
 | 019  | Design A — TLAS-of-chunk-AABBs ray-query renderer (hardware RT primary pass) | P0 | L | wgpu 30 ray-query/AS | DONE (advisor batch 2026-07-31, moved from `advisor-plans/004`): executed in-tree at `f014d3b`; primary pass 2.4-3.8x faster (monu1 21.0→6.4-8.9 ms, bistro_sm 60.7→16.7-17.2 ms GPU); basis for plans 014/015 — **measured on clipped bistro/church scenes, see 020** |
-| 020  | Stopgap: fix silent world clipping — grid-centered loading, CHUNKS_Y=8, drop diagnostics | P1 | M | — | TODO — planned 2026-08-03 from the audit finding that every model >256 voxels is silently truncated (bistro_sm 5/64 chunks, church 5/64, sponza 13/64); also fixes a latent chunk_y decode bug the CHUNKS_Y=1 grid hid; superseded structurally by 015 |
-| 021  | Refresh plan 015 — drift check, Current state, Stage-5 notes (post-020/022) | P1 | S | — | TODO — planned 2026-08-03; 015's drift check still expects the uncommitted kickoff state (HEAD `f014d3b`) and will STOP a dispatched executor; run after 020+022 ideally |
-| 022  | Restore the traversal heatmap — per-pixel DDA-work coloring in both renderers | P2 | S | — | TODO — planned 2026-08-03; `H` toggle + uniform upload exist but no shader reads the flag (dead since a shader rewrite); adds WGPU_RT_HEATMAP env + dump-diff verification |
+| 020  | Stopgap: fix silent world clipping — grid-centered loading, CHUNKS_Y=8, drop diagnostics | P1 | M | — | DONE (executed 2026-08-03 in worktree `wgpu-rt-exec-020`, branch `exec-020`, commit `d3304c2`): grid-centered anchor + floor offset (round-half-away dropped bistro's top row), CHUNKS_Y 1→8, `split_chunks` with drop diagnostics, 5 tests (54 total). Verified: bistro_sm 5→91 chunks @ offset (1024,1024,1024) zero drops; church 111; monu1 7 (mid-grid straddle, correct). Diff uncommitted in main — merge is user's call. Superseded structurally by 015 |
+| 021  | Refresh plan 015 — drift check, Current state, Stage-5 notes (post-020/022) | P1 | S | — | DONE (executed 2026-08-03 in-tree, docs-only): 015's drift check rewritten (expects HEAD `bde0db4`+, plans 020/022 landed at `d3304c2`/`f90cb7f`); Current-state bullets quote post-020/022 state (8×8×8 grid, `split_chunks`, heatmap reads); Stage-3 tree64 step → verify-absent; Stage-5 unclipped-scenes note added. **015 is dispatchable once 020/022 are merged** (bullets assume them landed) |
+| 022  | Restore the traversal heatmap — per-pixel DDA-work coloring in both renderers | P2 | S | — | DONE (executed 2026-08-03 in worktree `wgpu-rt-exec-022`, branch `exec-022`, commit `f90cb7f`): `HitResult.cells` + heatmap branch in both shaders (HEATMAP_CELL_SCALE 64), WGPU_RT_HEATMAP=1 env, grep-guard test (45 total / 31 unique). Verified: dump diff 201k bytes > 2% threshold, ray-query leg dumps. Diff uncommitted in main — merge is user's call |
 
 Status values: TODO | IN PROGRESS | DONE | BLOCKED (with one-line reason) | REJECTED (with one-line rationale)
 
@@ -176,6 +176,28 @@ Resolved since the last pass: #7 (unused shader files — `assets/shaders/` hold
 - **Adapter facts** (for plan 020/015 decisions): NVIDIA RTX 3070 (Vulkan),
   `max_binding_array_elements_per_shader_stage: 1048576` — CHUNKS_Y=8 (512
   chunks) is safe here.
+
+## Execution batch (2026-08-03, plans 020/022/021)
+
+- **020 executed** in worktree `wgpu-rt-exec-020`, branch `exec-020`, commit
+  `d3304c2` — APPROVED after one revision round: round-1 STOPPED at Step 5
+  (bistro_sm dropped 3405 voxels: round-half-away offset 1025 pushed world-y
+  to the grid's exclusive bound for the exactly-2048-tall scene); plan
+  revised to `floor()` offset + a 5th regression test; re-verified
+  independently (bistro 5→91 chunks @ (1024,1024,1024) zero drops, church
+  111, monu1 7 mid-grid; 54 tests; clippy/fmt clean).
+- **022 executed** in worktree `wgpu-rt-exec-022`, branch `exec-022`, commit
+  `f90cb7f` — APPROVED: heatmap live in both renderers; verified via
+  threshold dump-diff (201k differing bytes > 2%) and ray-query leg; 45
+  tests (31 unique); shader_validate clippy count unchanged at 9.
+- **021 executed** in-tree (docs-only; `plans/` is the advisor's domain):
+  015 refreshed as above. Deviation from the branch rule: 020/022 were
+  EXECUTED but UNMERGED when 021 ran, so 015's bullets were written as
+  post-020/022 (they describe the state after the pending merges). If the
+  user does NOT merge 020/022, re-run 015's drift check before dispatch.
+- **Merge is the user's call**: `git merge exec-020` and `git merge exec-022`
+  from master apply the two fixes; 015 dispatch follows. Worktrees stay in
+  `%TEMP%` until merged.
 
 ## Additional plan notes
 

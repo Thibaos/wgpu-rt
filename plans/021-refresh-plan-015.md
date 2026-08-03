@@ -95,7 +95,8 @@ content — only its drift/state/verification prose.
 | Purpose | Command | Expected on success |
 |---|---|---|
 | Drift verify | `git status --short -- src/` + `git log --oneline -1` | empty source diff; HEAD ≥ `bde0db4` |
-| Stale-claim greps | `sed -n '1,20p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md \| grep -n "f014d3b\|uncommitted"` | **no match after Step 2** (the only remaining `f014d3b` is the legitimate line-23 "Depends on" reference) |
+| Stale-claim greps | `sed -n '1,25p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md \| grep -n "f014d3b"` | **no match after Step 2** (the only remaining `f014d3b` is the "Depends on" reference, now below line 25 — the drift block grew) |
+| Stale-claim greps | `grep -n "uncommitted (Tree64" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` | no match after Step 2 (note: the NEW drift blockquote legitimately says "no uncommitted source changes" — grep for the old kickoff phrasing, not the bare word)
 | Stale-claim greps | `grep -n "tree64 = { git" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` | no match after Step 2 |
 | Stale-claim greps | `grep -n "8×1×8" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` | no match after Step 2 (replaced by the live values or left as-is if 020 has NOT landed — see Step 2.2) |
 | State verification | `grep -n "pub const CHUNKS_Y" src/world/chunk.rs` | read the value; branch on it (Step 2.2) |
@@ -229,7 +230,8 @@ explicit edits above), STOP conditions, out-of-scope list all stay as
 authored.
 
 **Verify**:
-- `sed -n '1,20p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md | grep -n "f014d3b\|uncommitted"` → **no match**
+- `sed -n '1,25p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md | grep -n "f014d3b"` → **no match** (the "Depends on" reference at the old line 23 is now below line 25 and is INTENTIONALLY kept)
+- `grep -n "uncommitted (Tree64" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → **no match** (the new blockquote's own "no uncommitted source changes" wording is fine — do not grep the bare word)
 - `grep -n "tree64 = { git" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → **no match**
 - `grep -n "8×1×8" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → **no match** (if 020 landed) OR unchanged (if 020 has not landed — record which case you were in)
 - `grep -n "unclipped" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → **at least one match**
@@ -261,7 +263,8 @@ ALL must hold (record the 020/022 branch you were in at the top of your
 report):
 
 - [ ] `git status --short -- src/` → empty; HEAD `bde0db4` or later
-- [ ] `sed -n '1,20p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md | grep -n "f014d3b\|uncommitted"` → no match (the line-23 `f014d3b` "Depends on" reference is INTENTIONALLY kept)
+- [ ] `sed -n '1,25p' plans/015-chunk-rewrite-8x8x8-storage-buffers.md | grep -n "f014d3b"` → no match (the "Depends on" `f014d3b` below line 25 is INTENTIONALLY kept)
+- [ ] `grep -n "uncommitted (Tree64" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → no match
 - [ ] `grep -n "tree64 = { git" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → no match
 - [ ] `grep -n "8×1×8" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → no match if 020 landed; unchanged if not (state recorded)
 - [ ] `grep -n "unclipped" plans/015-chunk-rewrite-8x8x8-storage-buffers.md` → at least one match

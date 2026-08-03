@@ -178,8 +178,21 @@ In `src/world/loader.rs`, replace the `(w_x, w_y, w_z)` computation (lines
   ```
   With the current constants this yields `(1024, 1024, 1024)`.
 
-  Keep the rest of `center_world` untouched (the offset math, the bounds log,
-  the `voxels.is_empty()` early return).
+  **Rounding change (executor-finding from 2026-08-03 execution — this is a
+  required part of Step 1, not optional)**: the three offset computations
+  currently end in `f32_to_i32(ox.round())` (`loader.rs:64-70`). Replace
+  `.round()` with `.floor()` on all three axes. Rationale: `f32::round`
+  rounds half away from zero, so an exactly-grid-tall scene whose center
+  is −0.5 gets offset 1025 and its top row lands on world-y = 2048 = the
+  grid's **exclusive** upper bound → silent drop (measured: bistro_sm lost
+  3405/13.8M voxels this way). `floor` guarantees the whole scene fits
+  whenever its extent ≤ 2047: with offset = floor(1024 − c),
+  world_min ≥ 1024 − S/2 − 1 ≥ 0 and world_max ≤ 1024 + S/2 ≤ 2047 for any
+  scene of extent S ≤ 2047 (S = M − m, c = m + S/2). Scenes wider than the
+  grid still drop (logged), as before.
+
+  Keep the rest of `center_world` untouched (the bounds scan, the cx/cy/cz
+  center computation, the log line, the `voxels.is_empty()` early return).
 
 **Verify**: `cargo check` → exit 0, no warnings. `cargo fmt --check` → exit 0.
 
@@ -305,18 +318,28 @@ In `src/world/loader.rs`:
    `World { voxels, palette: [[0;4];256], offset }.split_chunks()`; assert
    `dropped == 0`. This fails on the old (128,128,128) centering — world
    coords go negative — and passes with the grid-centered anchor.
+5. `exact_grid_tall_scene_fits_without_drops` — the rounding regression
+   (fails with `round()`, passes with `floor()`): build a voxel set that is
+   exactly as tall as the grid — e.g. insert `(0, y, 0) -> 1u8` for
+   `y in -1024i16..=1023` (2048 voxels, one per row) — call
+   `SceneGraphLoader::center_world`, then split; assert `dropped == 0`.
+   With round-half-away the offset is 1025 and the y=1023 voxel lands at
+   world-y 2048 (exclusive bound) → 1 drop. With floor it fits exactly.
+   (Uses `std::collections::HashMap`; `VoxelWorldData` is
+   `HashMap<(i16,i16,i16), u8>` — check the alias in `src/world/mod.rs`
+   and match it.)
 
 (Constructing a `World` requires `palette: [[u8; 4]; 256]` — `[[0u8; 4];
 256]` or copy `crate::world::create_palette_buffer`'s input shape; a
 zeroed palette is fine for tests since only `offset`/`voxels` matter.)
 
-**Verify**: `cargo test --quiet` → expect `18 passed` printed **twice**
+**Verify**: `cargo test --quiet` → expect `19 passed` printed **twice**
 (once for the `main` target, once for the `bench` target — this crate is
 bin-only with no `lib.rs`, so in-crate unit tests run once per bin), plus
 `12 passed` (hierarchical_mip_dda) and `4 passed` (shader_validate). The
 pre-change baseline is `14 passed` ×2 + `12` + `4` = 44 total; post-change
-is 18 ×2 + 12 + 4 = 52 total. Do NOT look for a literal "34" anywhere in
-cargo's output.
+is 19 ×2 + 12 + 4 = 54 total (5 new tests: 3 in mod.rs, 2 in loader.rs).
+Do NOT look for a literal "54" in the per-target counts.
 
 ### Step 5: Smoke-test real scenes
 
@@ -328,17 +351,27 @@ WGPU_RT_WORLD=assets/models/Church_Of_St_Sophia.vox cargo run --quiet --bin benc
 WGPU_RT_WORLD=assets/models/monu1.vox cargo run --quiet --bin bench -- 2
 ```
 
-**Verify** for each:
+**Verify** for each (the invariant is: **no dropped-voxel warning** and
+**world bounds inside the grid** — the offset value itself is
+scene-dependent by construction, `offset = anchor − scene_center`, and
+MUST NOT be asserted as a fixed number):
 - No `Chunk split: dropped ...` warning in the log (grep for `dropped`).
-- bistro_sm: `Non-empty chunks:` significantly higher than 5 (expect
-  roughly 30–150; record the actual value). church: higher than 5. monu1:
-  still 1.
-- The `offset` log line: expect ≈ `(1024, 1024, 1024)` for bistro_sm/church
-  (old code produced `(129, 129, 129)`). Derivation: the loader computes
-  `offset = anchor − scene_center` then rounds (`loader.rs:38-78`), and
-  bistro/church raw voxel bounds are symmetric around ~(−1,−1,−1), so
-  `1024 − (−1) ≈ 1025 → 1024` after truncation. Accept a deviation of ±2 on
-  any axis; beyond that, STOP and report rather than eyeballing it.
+- bistro_sm: `Non-empty chunks:` ≈ 90 (record the actual value; expect far
+  above 5). offset ≈ (1024, 1024, 1024) — bistro's raw bounds are
+  symmetric around ~(−1,−1,−1) so `anchor − center` ≈ 1024.5, and with
+  the Step-1 floor change it lands at 1024 with ZERO drops.
+- church: `Non-empty chunks:` ≈ 110 (record the actual value). No offset
+  assertion — church's raw z bounds (0..503) and x bounds (−1000..889) are
+  asymmetric, so its offset differs per axis (measured ≈ (1080,1066,773));
+  what matters is zero drops and bounds within the grid.
+- monu1: `Non-empty chunks:` ≈ 7 — **NOT 1**. Grid-centered loading places
+  monu1 mid-grid (world ≈ (985..1064)³), straddling chunk boundaries. This
+  is correct behavior, the point of the fix; the old anchor (128) happened
+  to keep it inside chunk 0. If you see 1, the centering is wrong.
+
+If ANY scene shows a `dropped` warning other than bistro_sm's pre-fix
+behavior above, STOP and report (with the floor fix, bistro_sm must drop
+0).
 
 If bistro_sm/church fail with a device lost / out-of-memory error on this
 machine, STOP and report (do not lower CHUNKS_Y — that reintroduces silent
@@ -369,15 +402,21 @@ COR-01). No integration-test files are touched (out of scope).
 ALL must hold:
 
 - [ ] `cargo check` exits 0
-- [ ] `cargo test --quiet` exits 0, printing `18 passed` twice (main + bench
-      targets), `12 passed`, `4 passed` — total 52; baseline was 44
+- [ ] `cargo test --quiet` exits 0, printing `19 passed` twice (main + bench
+      targets), `12 passed`, `4 passed` — total 54; baseline was 44
 - [ ] `cargo clippy` (lib+bin only) exits 0
 - [ ] `cargo fmt --check` exits 0
-- [ ] bench on bistro_sm: no "dropped" warning; `Non-empty chunks` > 5;
-      offset ≈ (1024, 1024, 1024) ±2
+- [ ] bench on bistro_sm: no "dropped" warning; `Non-empty chunks` ≈ 90
+      (record actual); offset ≈ (1024, 1024, 1024)
+- [ ] bench on church: no "dropped" warning; `Non-empty chunks` ≈ 110
+      (record actual); no fixed offset assertion
+- [ ] bench on monu1: `Non-empty chunks` ≈ 7 (mid-grid straddle is
+      expected, not a regression)
 - [ ] `grep -n "Chunk::new(glam::IVec3::new(chunk_x, 0, chunk_z))"
       src/world/mod.rs` → no match (chunk_y decode fixed)
 - [ ] `CHUNKS_Y` / `CHUNKS_Y_INT` are 8 in `src/world/chunk.rs`
+- [ ] `grep -n "\.round()" src/world/loader.rs` → no match in the offset
+      computation (floor applied); the new exact-fit test passes
 - [ ] `git status --short -- src/` shows changes only under `src/world/`
       (pre-existing `plans/` modifications are expected, not a violation)
 - [ ] `plans/README.md` row 020 updated
